@@ -2,18 +2,24 @@
   "highScores": [
     {
       "version": 1,
-      "score": 0.0,
+      "score": 0,
       "timestamp": "2025-01-15T00:00:00Z",
       "changes": "Initial strategy implementation - Opponent Modeling",
       "filename": "strategy.js"
+    },
+    {
+      "version": 2,
+      "score": 83.73,
+      "timestamp": "2025-11-04T04:22:55.637Z",
+      "changes": "Improved from version 1",
+      "filename": "strategy_v2_score83.73.js"
     }
   ],
   "currentBest": {
-    "version": 1,
-    "score": 0.0,
-    "filename": "strategy.js"
+    "version": 2,
+    "score": 83.73,
+    "filename": "strategy_v2_score83.73.js"
   },
   "strategy": "Opponent Modeling & Exploitation",
   "player": "Player3"
 }
-
