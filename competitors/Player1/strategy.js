@@ -1,6 +1,6 @@
 // BOT_NAME: Bayesian Inference Strategy
 // Strategy: Bayesian Inference - Updates beliefs about opponent dice based on their bids
-// Version: 3.1.0
+// Version: 3.2.0
 // Authorship: Tournament System
 
 // Bayesian Inference Strategy for Liar's Dice
@@ -9,11 +9,12 @@
 
 // Tunable parameters
 const FACE_PROB_BASE = 1/6;           // Base probability before updates
-const BELIEF_UPDATE_STRENGTH = 0.22;  // How much to trust bids (0.0-1.0) - optimized
-const BELIEF_DECAY = 0.985;           // Slight decay to prevent overconfidence (slower decay)
-const LIAR_THRESHOLD = 0.17;          // Call LIAR if probability < 17% (tuned for better accuracy)
-const RAISE_TARGET = 0.30;            // Need ≥30% probability to raise confidently (more aggressive)
-const OPENING_CAP_FRAC = 0.72;        // Don't open above 72% of total dice (balanced)
+const BELIEF_UPDATE_STRENGTH = 0.24;  // How much to trust bids (0.0-1.0) - fine-tuned
+const BELIEF_DECAY = 0.987;           // Slight decay to prevent overconfidence (even slower)
+const LIAR_THRESHOLD = 0.16;          // Call LIAR if probability < 16% (more aggressive)
+const RAISE_TARGET = 0.28;            // Need ≥28% probability to raise confidently (more aggressive)
+const OPENING_CAP_FRAC = 0.70;        // Don't open above 70% of total dice (balanced)
+const MOMENTUM_FACTOR = 0.15;         // How much recent bid momentum affects decisions
 
 // Persistent belief state (across rounds within a game)
 let self = null;
@@ -244,19 +245,44 @@ onmessage = (e) => {
   }
 
   // Opening move: bid on our best face with reasonable probability
+  // Consider game phase and opponent patterns for better opening
   if (!currentBid) {
     // Find our strongest face(s) - prefer higher faces if tied
     let bestFace = 6, bestCount = -1;
+    let secondBestFace = 6, secondBestCount = -1;
     for (let f = 6; f >= 1; f--) {
       if (myFaceCounts[f] >= bestCount) {
+        secondBestCount = bestCount;
+        secondBestFace = bestFace;
         bestCount = myFaceCounts[f];
         bestFace = f;
+      } else if (myFaceCounts[f] >= secondBestCount) {
+        secondBestCount = myFaceCounts[f];
+        secondBestFace = f;
       }
+    }
+
+    // Game phase awareness: early game vs late game
+    const totalDice = totalDiceOnTable;
+    const gamePhase = totalDice > 20 ? 'early' : totalDice > 10 ? 'mid' : 'late';
+    
+    // Adjust opening based on phase
+    let expectedMultiplier = 0.92;
+    if (gamePhase === 'late') {
+      expectedMultiplier = 0.88; // More conservative in late game
+    } else if (gamePhase === 'early') {
+      expectedMultiplier = 0.95; // Slightly more aggressive early
     }
 
     // Calculate expected count using initial beliefs (uniform at start)
     const expectedUnknown = unknownDiceCount * FACE_PROB_BASE;
-    let qty = Math.max(1, Math.floor(bestCount + expectedUnknown * 0.9)); // Slightly conservative
+    let qty = Math.max(1, Math.floor(bestCount + expectedUnknown * expectedMultiplier));
+
+    // Consider if we have a strong hand (multiple of same face)
+    if (bestCount >= 2) {
+      // With multiple dice of same face, we can be more aggressive
+      qty = Math.max(qty, bestCount + 1);
+    }
 
     // Cap opening bid
     const openingCap = Math.min(totalDiceOnTable, Math.ceil(totalDiceOnTable * OPENING_CAP_FRAC));
@@ -273,6 +299,17 @@ onmessage = (e) => {
 
   // Reacting to a bid
   const { quantity: prevQty, face: prevFace } = currentBid;
+  
+  // Calculate bid momentum (how fast quantity is increasing)
+  let bidMomentum = 0;
+  if (history.length >= 2) {
+    const recentBids = history.slice(-5).filter(a => a.action === 'raise');
+    if (recentBids.length >= 2) {
+      const qtyChange = recentBids[recentBids.length - 1].quantity - recentBids[0].quantity;
+      bidMomentum = qtyChange / Math.max(1, recentBids.length);
+    }
+  }
+  
   const probPrevTrue = probabilityAtLeast(prevFace, prevQty);
 
   // Adaptive threshold based on game state
@@ -284,11 +321,14 @@ onmessage = (e) => {
   
   // Also consider how many players are left (fewer players = more aggressive)
   const remainingPlayers = players.filter(p => p.diceCount > 0).length;
-  const playerCountFactor = remainingPlayers <= 3 ? 1.1 : 1.0; // More aggressive with fewer players
+  const playerCountFactor = remainingPlayers <= 3 ? 1.12 : remainingPlayers <= 4 ? 1.05 : 1.0;
   
-  const adaptiveLiarThreshold = (myDiceCount < avgOpponentDice 
-    ? LIAR_THRESHOLD * 1.12  // More aggressive when behind
-    : LIAR_THRESHOLD * 0.96) * playerCountFactor;  // Slightly more conservative when ahead
+  // Adjust threshold based on bid momentum (high momentum = more skeptical)
+  const momentumAdjustment = 1.0 + (bidMomentum > 2 ? 0.08 : bidMomentum > 1 ? 0.04 : 0);
+  
+  const adaptiveLiarThreshold = ((myDiceCount < avgOpponentDice 
+    ? LIAR_THRESHOLD * 1.14  // More aggressive when behind
+    : LIAR_THRESHOLD * 0.94) * playerCountFactor) * momentumAdjustment;  // More conservative when ahead
 
   // If current bid is very unlikely, call LIAR
   if (probPrevTrue < adaptiveLiarThreshold) {
@@ -297,24 +337,38 @@ onmessage = (e) => {
   }
 
   // Try to find a legal raise that meets our probability target
-  // Prefer quantity increases (safer) over face increases
+  // Prefer quantity increases (safer) over face increases, but be smart about it
   const raiseCandidates = [
-    { quantity: prevQty + 1, face: prevFace, cost: 1 }  // Increase quantity (cheapest)
+    { quantity: prevQty + 1, face: prevFace, cost: 1, type: 'qty' }  // Increase quantity (cheapest)
   ];
   // Add face increases at same quantity (slightly riskier)
   for (let f = prevFace + 1; f <= 6; f++) {
-    raiseCandidates.push({ quantity: prevQty, face: f, cost: 2 });
+    raiseCandidates.push({ quantity: prevQty, face: f, cost: 2, type: 'face' });
+  }
+  
+  // Also consider face increases with quantity+1 if we have strong support
+  if (myFaceCounts[prevFace] >= 1) {
+    for (let f = prevFace + 1; f <= 6; f++) {
+      if (myFaceCounts[f] >= myFaceCounts[prevFace]) {
+        raiseCandidates.push({ quantity: prevQty + 1, face: f, cost: 3, type: 'both' });
+      }
+    }
   }
 
   // Find the best raise that meets our target
-  // Prefer higher probability raises when multiple options exist
+  // Prefer higher probability raises, but also consider our own dice
   let chosenRaise = null;
-  let bestProb = 0;
+  let bestScore = -1;
   for (const r of raiseCandidates) {
     const p = probabilityAtLeast(r.face, r.quantity);
-    if (p >= RAISE_TARGET && p > bestProb) {
-      chosenRaise = r;
-      bestProb = p;
+    if (p >= RAISE_TARGET) {
+      // Score combines probability and our own support
+      const mySupport = myFaceCounts[r.face] || 0;
+      const score = p * 0.7 + (mySupport / Math.max(1, r.quantity)) * 0.3 - r.cost * 0.05;
+      if (score > bestScore) {
+        chosenRaise = r;
+        bestScore = score;
+      }
     }
   }
 
