@@ -42,7 +42,12 @@ if (newScore <= currentBest) {
 // New high score!
 const newVersion = (highScores.currentBest?.version || 1) + 1;
 const timestamp = new Date().toISOString();
-const backupFilename = `strategy_v${newVersion}_score${newScore.toFixed(2)}.js`;
+// Format score: match example format (strategy_v2_score45.23.js)
+// Keep up to 2 decimal places, remove trailing zeros
+const scoreStr = newScore % 1 === 0 
+  ? newScore.toString() 
+  : parseFloat(newScore.toFixed(2)).toString();
+const backupFilename = `strategy_v${newVersion}_score${scoreStr}.js`;
 
 console.log(`\n🎉 NEW HIGH SCORE!`);
 console.log(`   Previous: ${currentBest}`);

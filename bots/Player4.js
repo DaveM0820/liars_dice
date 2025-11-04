@@ -1,19 +1,19 @@
 // BOT_NAME: Dice-Count Adaptive Risk Strategy
 // Strategy: Adapts risk-taking based on dice counts and game stage
-// Version: 1.5.0
+// Version: 1.3.0
 // Authorship: Tournament System
 
 const FACE_PROB = 1/6;
 
-// Base thresholds - balanced approach
-const BASE_LIAR_THRESHOLD = 0.20;
-const BASE_RAISE_THRESHOLD = 0.40;
+// Base thresholds - tuned for better performance
+const BASE_LIAR_THRESHOLD = 0.18;  // Slightly more aggressive base
+const BASE_RAISE_THRESHOLD = 0.38; // Slightly lower base raise threshold
 
-// Position-based adjustments
-const LEADING_LIAR_THRESHOLD = 0.15;   // Conservative when ahead
-const LEADING_RAISE_THRESHOLD = 0.50;  // Only raise on high confidence
-const TRAILING_LIAR_THRESHOLD = 0.30;  // Aggressive when behind
-const TRAILING_RAISE_THRESHOLD = 0.30; // Take more risks when trailing
+// Position-based adjustments - optimized
+const LEADING_LIAR_THRESHOLD = 0.14;   // Conservative when ahead
+const LEADING_RAISE_THRESHOLD = 0.48;  // Only raise on high confidence
+const TRAILING_LIAR_THRESHOLD = 0.32;  // More aggressive when behind
+const TRAILING_RAISE_THRESHOLD = 0.28; // Take more risks when trailing
 
 // Late game adjustments (when total dice < 10)
 const LATE_GAME_LIAR_THRESHOLD = 0.25;  // Minimum threshold in late game
@@ -59,16 +59,42 @@ onmessage = (e) => {
     return clamp01(sum);
   }
 
-  // Improved probability calculation - use exact binomial for accuracy
+  // Enhanced probability calculation with better approximation
   function probabilityAtLeast(face, qty) {
     const mySupport = myFaceCounts[face] || 0;
     const needFromUnknown = Math.max(0, qty - mySupport);
     
     if (needFromUnknown <= 0) return 1;
     if (needFromUnknown > unknownDiceCount) return 0;
+    if (unknownDiceCount === 0) return needFromUnknown === 0 ? 1 : 0;
     
-    // Always use exact binomial calculation for accuracy
-    return binomTail(unknownDiceCount, needFromUnknown, FACE_PROB);
+    // Use exact binomial for small cases (more accurate)
+    if (unknownDiceCount <= 20) {
+      return binomTail(unknownDiceCount, needFromUnknown, FACE_PROB);
+    }
+    
+    // For larger cases, use normal approximation with continuity correction
+    const mean = unknownDiceCount * FACE_PROB;
+    const variance = unknownDiceCount * FACE_PROB * (1 - FACE_PROB);
+    const stddev = Math.sqrt(variance);
+    
+    if (stddev < 0.1) {
+      // Very small variance, use exact calculation
+      return binomTail(unknownDiceCount, needFromUnknown, FACE_PROB);
+    }
+    
+    // Continuity correction: P(X >= k) ≈ P(X > k - 0.5)
+    const z = (needFromUnknown - 0.5 - mean) / stddev;
+    
+    // Use complementary error function approximation
+    // P(X >= k) ≈ 0.5 * erfc(-z / sqrt(2))
+    // erfc(-x) ≈ 1 - (1/sqrt(2π)) * exp(-x²/2) * (1 - x²/3 + x⁴/15)
+    if (z <= -3) return 1;
+    if (z >= 3) return 0;
+    
+    const expTerm = Math.exp(-0.5 * z * z);
+    const erfApprox = 1 - (expTerm / Math.sqrt(2 * Math.PI)) * (1 - z*z/3 + z*z*z*z/15);
+    return clamp01(0.5 + 0.5 * erfApprox);
   }
 
   // Determine position and adjust thresholds
@@ -159,12 +185,14 @@ onmessage = (e) => {
     const myRank = diceCounts.filter(c => c > myDiceCount).length;
     const isTrailing = myDiceCount === Math.min(...diceCounts);
     
-    // Adjust opening based on position
-    let openingMultiplier = 0.90;
+    // Adjust opening based on position - more nuanced
+    let openingMultiplier = 0.92;
     if (isTrailing) {
-      openingMultiplier = 1.0; // More aggressive when trailing
+      openingMultiplier = 1.05; // More aggressive when trailing
     } else if (myRank === 0) {
-      openingMultiplier = 0.85; // More conservative when leading
+      openingMultiplier = 0.88; // More conservative when leading
+    } else if (myRank === 1) {
+      openingMultiplier = 0.95; // Slightly aggressive when second
     }
     
     let qty = Math.max(1, Math.floor(bestCount + expectedUnknown * openingMultiplier));
@@ -219,21 +247,41 @@ onmessage = (e) => {
   }
 
   // No raise meets threshold, but claim is plausible
-  // If we're close to threshold, make minimal raise anyway
-  if (raiseQtyProb >= raiseThreshold * 0.85) {
+  // Smarter fallback logic based on position
+  const diceCounts = players.map(p => p.diceCount).filter(count => count > 0);
+  const isTrailing = myDiceCount === Math.min(...diceCounts);
+  const isLeading = myDiceCount === Math.max(...diceCounts) && diceCounts.filter(c => c === myDiceCount).length === 1;
+  
+  // If we're close to threshold, make minimal raise anyway (more aggressive when trailing)
+  const closeThreshold = isTrailing ? raiseThreshold * 0.80 : raiseThreshold * 0.85;
+  if (raiseQtyProb >= closeThreshold) {
     postMessage({ action: 'raise', quantity: raiseQty.quantity, face: raiseQty.face });
     return;
   }
 
-  // Try face bump as fallback
+  // Try face bump as fallback (more aggressive when trailing)
   if (prevFace < 6) {
     const faceBumpProb = probabilityAtLeast(prevFace + 1, prevQty);
-    if (faceBumpProb >= raiseThreshold * 0.80) {
+    const faceBumpThreshold = isTrailing ? raiseThreshold * 0.75 : raiseThreshold * 0.80;
+    if (faceBumpProb >= faceBumpThreshold) {
       postMessage({ action: 'raise', quantity: prevQty, face: prevFace + 1 });
       return;
     }
   }
 
-  // Last resort: minimal legal raise
+  // Last resort: if trailing, be more willing to raise; if leading, consider calling LIAR
+  if (isTrailing && claimLikely >= liarThreshold * 1.2) {
+    // When trailing, take more risks even if below threshold
+    postMessage({ action: 'raise', quantity: prevQty + 1, face: prevFace });
+    return;
+  }
+  
+  if (isLeading && claimLikely < liarThreshold * 1.1) {
+    // When leading, be more conservative - call LIAR if claim is borderline
+    postMessage({ action: 'liar' });
+    return;
+  }
+
+  // Default: minimal legal raise
   postMessage({ action: 'raise', quantity: prevQty + 1, face: prevFace });
 };
