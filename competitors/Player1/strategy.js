@@ -1,6 +1,6 @@
 // BOT_NAME: Bayesian Inference Strategy
 // Strategy: Bayesian Inference - Updates beliefs about opponent dice based on their bids
-// Version: 3.0.0
+// Version: 3.1.0
 // Authorship: Tournament System
 
 // Bayesian Inference Strategy for Liar's Dice
@@ -9,11 +9,11 @@
 
 // Tunable parameters
 const FACE_PROB_BASE = 1/6;           // Base probability before updates
-const BELIEF_UPDATE_STRENGTH = 0.20;  // How much to trust bids (0.0-1.0) - increased for faster learning
-const BELIEF_DECAY = 0.98;            // Slight decay to prevent overconfidence
-const LIAR_THRESHOLD = 0.18;          // Call LIAR if probability < 18% (tuned for better accuracy)
-const RAISE_TARGET = 0.32;            // Need ≥32% probability to raise confidently
-const OPENING_CAP_FRAC = 0.75;        // Don't open above 75% of total dice (more aggressive)
+const BELIEF_UPDATE_STRENGTH = 0.22;  // How much to trust bids (0.0-1.0) - optimized
+const BELIEF_DECAY = 0.985;           // Slight decay to prevent overconfidence (slower decay)
+const LIAR_THRESHOLD = 0.17;          // Call LIAR if probability < 17% (tuned for better accuracy)
+const RAISE_TARGET = 0.30;            // Need ≥30% probability to raise confidently (more aggressive)
+const OPENING_CAP_FRAC = 0.72;        // Don't open above 72% of total dice (balanced)
 
 // Persistent belief state (across rounds within a game)
 let self = null;
@@ -26,6 +26,7 @@ onmessage = (e) => {
   if (!self) {
     self = {
       belief: {},  // belief[playerId][face] = expected probability
+      opponentPatterns: {}, // Track opponent calling/raising patterns
       myId: you.id
     };
   }
@@ -49,34 +50,67 @@ onmessage = (e) => {
   // Update beliefs from recent history
   // When an opponent bids on face F, increase our belief they have F
   // Also consider the quantity bid - higher quantities suggest stronger hands
-  const recentHistory = history.slice(-60); // Look at last 60 actions
+  // Track opponent patterns: aggressive vs conservative
+  const recentHistory = history.slice(-80); // Look at more history for better patterns
+  
+  // Initialize opponent pattern tracking
+  for (const player of players) {
+    if (player.id !== self.myId && !self.opponentPatterns[player.id]) {
+      self.opponentPatterns[player.id] = {
+        liarCalls: 0,
+        raises: 0,
+        aggressiveFactor: 1.0 // 1.0 = neutral, >1.0 = aggressive, <1.0 = conservative
+      };
+    }
+  }
+  
   for (const action of recentHistory) {
-    if (action.action === 'raise' && action.actor !== self.myId) {
-      const bidderId = action.actor;
-      const bidFace = action.face;
-      const bidQty = action.quantity || 0;
+    if (action.actor !== self.myId) {
+      const actorId = action.actor;
       
-      if (self.belief[bidderId]) {
+      if (action.action === 'raise' && self.belief[actorId]) {
+        const bidFace = action.face;
+        const bidQty = action.quantity || 0;
+        
+        // Update pattern tracking
+        self.opponentPatterns[actorId].raises++;
+        
         // Bayesian update with quantity weighting
         // Higher quantity bids on a face = stronger signal
-        const quantityWeight = Math.min(1.0, bidQty / Math.max(1, totalDiceOnTable * 0.3));
-        const currentBelief = self.belief[bidderId][bidFace] || FACE_PROB_BASE;
+        // Also consider if they're jumping to a new face (stronger signal)
+        const prevBid = recentHistory.find((a, idx) => 
+          idx < recentHistory.indexOf(action) && 
+          a.actor === actorId && a.action === 'raise'
+        );
+        const faceJumpBonus = (prevBid && prevBid.face !== bidFace) ? 1.3 : 1.0;
         
-        // Stronger update for higher quantity bids
-        const update = BELIEF_UPDATE_STRENGTH * quantityWeight * (1 - currentBelief);
-        self.belief[bidderId][bidFace] = Math.min(0.85, currentBelief + update); // Cap at 85% to avoid overconfidence
+        const quantityWeight = Math.min(1.0, bidQty / Math.max(1, totalDiceOnTable * 0.25));
+        const currentBelief = self.belief[actorId][bidFace] || FACE_PROB_BASE;
+        
+        // Stronger update for higher quantity bids and face jumps
+        const update = BELIEF_UPDATE_STRENGTH * quantityWeight * faceJumpBonus * (1 - currentBelief);
+        self.belief[actorId][bidFace] = Math.min(0.88, currentBelief + update); // Cap at 88%
         
         // Apply decay to other faces and normalize
-        const totalOther = self.belief[bidderId].slice(1, 7).reduce((s, v, i) => 
+        const totalOther = self.belief[actorId].slice(1, 7).reduce((s, v, i) => 
           s + (i + 1 === bidFace ? 0 : v), 0);
         if (totalOther > 0) {
           for (let f = 1; f <= 6; f++) {
-            if (f !== bidFace && self.belief[bidderId][f]) {
+            if (f !== bidFace && self.belief[actorId][f]) {
               // Decay + proportional decrease
-              self.belief[bidderId][f] = Math.max(0.01, 
-                self.belief[bidderId][f] * BELIEF_DECAY * (1 - update / (totalOther + 0.1)));
+              self.belief[actorId][f] = Math.max(0.01, 
+                self.belief[actorId][f] * BELIEF_DECAY * (1 - update / (totalOther + 0.1)));
             }
           }
+        }
+      } else if (action.action === 'liar') {
+        // Track calling patterns
+        self.opponentPatterns[actorId].liarCalls++;
+        // Update aggressive factor: more calls = more aggressive
+        const totalActions = self.opponentPatterns[actorId].raises + self.opponentPatterns[actorId].liarCalls;
+        if (totalActions > 0) {
+          const callRatio = self.opponentPatterns[actorId].liarCalls / totalActions;
+          self.opponentPatterns[actorId].aggressiveFactor = 0.7 + callRatio * 0.6; // 0.7-1.3 range
         }
       }
     }
@@ -118,7 +152,17 @@ onmessage = (e) => {
       if (player.id === self.myId) continue;
       
       const diceCount = player.diceCount;
-      const faceProb = self.belief[player.id]?.[face] || FACE_PROB_BASE;
+      let faceProb = self.belief[player.id]?.[face] || FACE_PROB_BASE;
+      
+      // Adjust probability based on opponent's aggressive factor
+      // Aggressive opponents may bluff more, conservative ones are more truthful
+      const pattern = self.opponentPatterns[player.id];
+      if (pattern && pattern.aggressiveFactor) {
+        // If they're aggressive (>1.0), they might be bluffing - reduce trust slightly
+        // If they're conservative (<1.0), they're likely truthful - trust more
+        faceProb = faceProb * (0.9 + 0.2 * (2 - pattern.aggressiveFactor));
+        faceProb = Math.max(0.05, Math.min(0.95, faceProb)); // Clamp
+      }
       
       // Expected count from this player
       expectedCount += diceCount * faceProb;
@@ -238,9 +282,13 @@ onmessage = (e) => {
     .filter(p => p.id !== self.myId)
     .reduce((sum, p) => sum + p.diceCount, 0) / Math.max(1, players.length - 1);
   
-  const adaptiveLiarThreshold = myDiceCount < avgOpponentDice 
-    ? LIAR_THRESHOLD * 1.15  // More aggressive when behind
-    : LIAR_THRESHOLD * 0.95;  // Slightly more conservative when ahead
+  // Also consider how many players are left (fewer players = more aggressive)
+  const remainingPlayers = players.filter(p => p.diceCount > 0).length;
+  const playerCountFactor = remainingPlayers <= 3 ? 1.1 : 1.0; // More aggressive with fewer players
+  
+  const adaptiveLiarThreshold = (myDiceCount < avgOpponentDice 
+    ? LIAR_THRESHOLD * 1.12  // More aggressive when behind
+    : LIAR_THRESHOLD * 0.96) * playerCountFactor;  // Slightly more conservative when ahead
 
   // If current bid is very unlikely, call LIAR
   if (probPrevTrue < adaptiveLiarThreshold) {
