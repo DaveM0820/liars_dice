@@ -1,8 +1,8 @@
 // BOT_NAME: Monte Carlo Simulation Planner
 // Strategy: Monte Carlo Simulation - Simulates many possible dice distributions
-// Version: 1.2.0
+// Version: 1.6.0
 // Authorship: Tournament System
-// Improvements: Refined survival logic, position-aware thresholds (aggressive when ahead, conservative when behind)
+// Improvements: Fine-tuned thresholds for better late-game survival, optimized raise selection
 
 onmessage = (e) => {
   const { state } = e.data;
@@ -222,8 +222,16 @@ onmessage = (e) => {
     });
   }
 
-  // Find best raise option
-  raiseEvaluations.sort((a, b) => b.score - a.score);
+  // Find best raise option - smarter sorting
+  raiseEvaluations.sort((a, b) => {
+    // Primary: by score
+    if (Math.abs(b.score - a.score) > 0.005) return b.score - a.score;
+    // Secondary: prefer face bumps (usually safer than quantity increases)
+    if (a.option.face > b.option.face && a.option.quantity === b.option.quantity) return -1;
+    if (b.option.face > a.option.face && a.option.quantity === b.option.quantity) return 1;
+    // Tertiary: prefer lower quantity (more conservative)
+    return a.option.quantity - b.option.quantity;
+  });
   const bestRaise = raiseEvaluations[0];
 
   // Decision: Call LIAR if it's significantly better than raising
@@ -264,12 +272,23 @@ onmessage = (e) => {
   if (liarWinRate >= fallbackLiarThreshold) {
     postMessage({ action: 'liar' });
   } else {
-    // Last resort: minimal raise (quantity +1, same face)
-    // Only do this if we're not in very low dice mode (too risky)
-    if (isVeryLowDice && liarWinRate >= 0.15) {
+    // Last resort: try to find any reasonable raise before giving up
+    // Check if there's a face bump that's safer
+    let safeFaceBump = null;
+    for (const eval of raiseEvaluations) {
+      if (eval.option.face > prevFace && eval.option.quantity === prevQty && eval.trueRate >= 0.30) {
+        safeFaceBump = eval.option;
+        break;
+      }
+    }
+    
+    if (safeFaceBump) {
+      postMessage({ action: 'raise', quantity: safeFaceBump.quantity, face: safeFaceBump.face });
+    } else if (isVeryLowDice && liarWinRate >= 0.15) {
       // In very low dice, prefer calling LIAR even if slightly risky
       postMessage({ action: 'liar' });
     } else {
+      // Minimal raise (quantity +1, same face)
       postMessage({ action: 'raise', quantity: prevQty + 1, face: prevFace });
     }
   }

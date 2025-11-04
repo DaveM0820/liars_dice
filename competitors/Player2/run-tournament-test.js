@@ -1,22 +1,16 @@
 // Headless tournament runner for Player2 Monte Carlo strategy
-// Tests against baseline bots and reports results
-
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-console.log('🏆 Running Tournament Test for Player2 (v1.2.0)\n');
+console.log('🏆 Running Tournament Test for Player2 (v1.3.0)\n');
 console.log('='.repeat(60));
 
-// Configuration
-const ROUNDS = 1000; // More rounds for better accuracy
+const ROUNDS = 1000;
 const SEED = 10185;
-
-// Load bot files
 const botsDir = path.join(__dirname, '../../bots');
 const botFiles = ['Player2.js', 'Baseline.js', 'ProbabilityTuned.js', 'MomentumAdaptive.js', 'AggroBluffer.js'];
 
-// Check if bots exist
 for (const file of botFiles) {
   if (!fs.existsSync(path.join(botsDir, file))) {
     console.error(`❌ Missing bot: ${file}`);
@@ -26,7 +20,6 @@ for (const file of botFiles) {
 
 console.log('✅ All bots found\n');
 
-// RNG
 function makeRNG(seed) {
   let s = seed >>> 0;
   return function rand() {
@@ -57,7 +50,6 @@ function legalRaise(prev, q, f) {
   return (q > quantity) || (q === quantity && f > face);
 }
 
-// Create bot worker
 function createBotWorker(botCode, seed) {
   const sandbox = {
     Math: {
@@ -114,7 +106,6 @@ function loadBotCode(filePath) {
   return fs.readFileSync(filePath, 'utf8');
 }
 
-// Play one hand
 function playHand(botFiles, botCodes, seed) {
   const rng = makeRNG(seed);
   const workers = botCodes.map((code, i) => createBotWorker(code, seed + i * 101));
@@ -221,17 +212,15 @@ function playHand(botFiles, botCodes, seed) {
   return { winner: winner?.file, placements, handCount };
 }
 
-// Scoring
 const PLACEMENT_POINTS = [0, 100, 55, 35, 20, 5];
 function pointsForPlace(place) {
   return PLACEMENT_POINTS[Math.min(place, PLACEMENT_POINTS.length - 1)] || 0;
 }
 
-// Run tournament
 async function runTournament() {
   console.log(`📊 Running ${ROUNDS} rounds with seed ${SEED}\n`);
   console.log('Competitors:');
-  console.log('  - Player2 (Monte Carlo v1.2.0)');
+  console.log('  - Player2 (Monte Carlo v1.6.0 - optimized raise selection)');
   console.log('  - Baseline');
   console.log('  - ProbabilityTuned');
   console.log('  - MomentumAdaptive');
@@ -309,7 +298,6 @@ async function runTournament() {
       console.log(`   Leader: ${leader.name} (${leader.avgTS.toFixed(2)} avg TS)`);
     }
 
-    // Return the score for updating high score
     return player2Result.avgTS;
   }
 
@@ -319,11 +307,8 @@ async function runTournament() {
 runTournament()
   .then(score => {
     if (score !== null && score > 0) {
-      console.log(`\n💾 Saving score: ${score.toFixed(2)}`);
-      console.log(`   Run: node update-highscore.js ${score.toFixed(2)}`);
-      console.log('');
+      console.log(`\n💾 Score: ${score.toFixed(2)}`);
       
-      // Automatically update high score if it's better
       const highscoreFile = path.join(__dirname, 'highscores.json');
       let highScores = { highScores: [], currentBest: { version: 1, score: 0.0, filename: 'strategy.js' } };
       
@@ -340,7 +325,6 @@ runTournament()
       if (score > currentBest) {
         console.log(`\n🎉 NEW HIGH SCORE! Previous: ${currentBest.toFixed(2)}, New: ${score.toFixed(2)}`);
         
-        // Run the update script
         const { execSync } = require('child_process');
         try {
           execSync(`node update-highscore.js ${score.toFixed(2)}`, { 
@@ -353,6 +337,7 @@ runTournament()
         }
       } else {
         console.log(`\n📊 Score ${score.toFixed(2)} is not higher than current best: ${currentBest.toFixed(2)}`);
+        console.log(`   Improvement needed: ${(currentBest - score).toFixed(2)} points`);
       }
     }
   })
