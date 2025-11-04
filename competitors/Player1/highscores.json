@@ -1,0 +1,25 @@
+{
+  "highScores": [
+    {
+      "version": 1,
+      "score": 0,
+      "timestamp": "2025-01-15T00:00:00Z",
+      "changes": "Initial strategy implementation - Bayesian Inference",
+      "filename": "strategy.js"
+    },
+    {
+      "version": 2,
+      "score": 42.5,
+      "timestamp": "2025-11-04T03:22:55.490Z",
+      "changes": "Improved from version 1",
+      "filename": "strategy_v2_score42.50.js"
+    }
+  ],
+  "currentBest": {
+    "version": 2,
+    "score": 42.5,
+    "filename": "strategy_v2_score42.50.js"
+  },
+  "strategy": "Bayesian Inference Strategy",
+  "player": "Player1"
+}

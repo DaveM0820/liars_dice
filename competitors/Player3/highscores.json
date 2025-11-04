@@ -1,0 +1,19 @@
+{
+  "highScores": [
+    {
+      "version": 1,
+      "score": 0.0,
+      "timestamp": "2025-01-15T00:00:00Z",
+      "changes": "Initial strategy implementation - Opponent Modeling",
+      "filename": "strategy.js"
+    }
+  ],
+  "currentBest": {
+    "version": 1,
+    "score": 0.0,
+    "filename": "strategy.js"
+  },
+  "strategy": "Opponent Modeling & Exploitation",
+  "player": "Player3"
+}
+
