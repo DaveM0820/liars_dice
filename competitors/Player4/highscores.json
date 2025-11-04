@@ -2,24 +2,17 @@
   "highScores": [
     {
       "version": 1,
-      "score": 0,
+      "score": 0.0,
       "timestamp": "2025-01-15T00:00:00Z",
       "changes": "Initial strategy implementation - Adaptive Risk",
       "filename": "strategy.js"
-    },
-    {
-      "version": 2,
-      "score": 55,
-      "timestamp": "2025-11-04T04:25:01.092Z",
-      "changes": "Improved from version 1",
-      "filename": "strategy_v2_score55.00.js"
     }
   ],
   "currentBest": {
-    "version": 2,
-    "score": 55,
-    "filename": "strategy_v2_score55.00.js"
+    "version": 1,
+    "score": 0.0,
+    "filename": "strategy.js"
   },
-  "strategy": "Dice-Count Adaptive Risk Strategy",
+  "strategy": "Dice-Count Adaptive Risk",
   "player": "Player4"
 }
