@@ -1,6 +1,6 @@
 // BOT_NAME: Bayesian Inference Strategy
 // Strategy: Bayesian Inference - Updates beliefs about opponent dice based on their bids
-// Version: 3.3.0
+// Version: 3.4.0
 // Authorship: Tournament System
 
 // Bayesian Inference Strategy for Liar's Dice
@@ -9,13 +9,14 @@
 
 // Tunable parameters
 const FACE_PROB_BASE = 1/6;           // Base probability before updates
-const BELIEF_UPDATE_STRENGTH = 0.26;  // How much to trust bids (0.0-1.0) - optimized further
-const BELIEF_DECAY = 0.988;           // Slight decay to prevent overconfidence (very slow)
-const LIAR_THRESHOLD = 0.155;         // Call LIAR if probability < 15.5% (more aggressive)
-const RAISE_TARGET = 0.27;            // Need ≥27% probability to raise confidently (more aggressive)
-const OPENING_CAP_FRAC = 0.68;        // Don't open above 68% of total dice (balanced)
+const BELIEF_UPDATE_STRENGTH = 0.27;  // How much to trust bids (0.0-1.0) - maximum optimization
+const BELIEF_DECAY = 0.989;           // Slight decay to prevent overconfidence (very very slow)
+const LIAR_THRESHOLD = 0.152;         // Call LIAR if probability < 15.2% (more aggressive)
+const RAISE_TARGET = 0.26;            // Need ≥26% probability to raise confidently (more aggressive)
+const OPENING_CAP_FRAC = 0.67;        // Don't open above 67% of total dice (balanced)
 const MOMENTUM_FACTOR = 0.15;         // How much recent bid momentum affects decisions
-const ENDGAME_AGGRESSION = 1.2;       // Multiplier for endgame LIAR calls
+const ENDGAME_AGGRESSION = 1.25;      // Multiplier for endgame LIAR calls (more aggressive)
+const HAND_STRENGTH_BONUS = 0.12;     // Bonus for strong hands in opening
 
 // Persistent belief state (across rounds within a game)
 let self = null;
@@ -152,14 +153,7 @@ onmessage = (e) => {
     if (needFromUnknown <= 0) return 1.0;
     if (needFromUnknown > unknownDiceCount) return 0.0;
 
-    // For small numbers, use exact binomial calculation
-    // For larger numbers, use normal approximation with better variance handling
-    if (unknownDiceCount <= 15) {
-      // Exact calculation using convolution of binomial distributions
-      return exactBinomialProbability(face, needFromUnknown);
-    }
-
-    // Normal approximation for larger cases
+    // Calculate expected count first (needed for all methods)
     let expectedCount = 0;
     let varianceSum = 0;
     
@@ -185,16 +179,27 @@ onmessage = (e) => {
       // Variance for binomial: n * p * (1-p)
       varianceSum += diceCount * faceProb * (1 - faceProb);
     }
+
+    // Use exact calculation for small cases, Poisson approximation for medium, normal for large
+    if (unknownDiceCount <= 15) {
+      // Exact calculation using convolution of binomial distributions
+      return exactBinomialProbability(face, needFromUnknown);
+    } else if (unknownDiceCount <= 25 && expectedCount > 0 && expectedCount < 10) {
+      // Poisson approximation for intermediate cases (good when mean is small)
+      return poissonApproximation(face, needFromUnknown, expectedCount);
+    }
     
     // Normal approximation: P(X >= k) where X ~ N(μ, σ²)
     const mean = expectedCount;
-    const stdDev = Math.sqrt(Math.max(0.25, varianceSum)); // Minimum variance to avoid extreme values
+    // Better variance estimation: use continuity correction and minimum variance
+    const stdDev = Math.sqrt(Math.max(0.3, varianceSum)); // Slightly higher minimum for stability
     
     if (stdDev < 0.01) {
       // Deterministic case
       return expectedCount >= needFromUnknown ? 1.0 : 0.0;
     }
     
+    // Continuity correction: use 0.5 for better approximation
     const z = (needFromUnknown - 0.5 - mean) / stdDev;
     
     // Approximate cumulative normal
@@ -258,6 +263,23 @@ onmessage = (e) => {
     return Math.max(0, Math.min(1, sum));
   }
 
+  // Poisson approximation for intermediate cases
+  function poissonApproximation(face, need, lambda) {
+    if (lambda <= 0) return need <= 0 ? 1.0 : 0.0;
+    
+    // Poisson: P(X >= k) where X ~ Poisson(λ)
+    // Use complement: P(X >= k) = 1 - P(X < k)
+    let sum = 0;
+    let term = Math.exp(-lambda);
+    for (let k = 0; k < need; k++) {
+      sum += term;
+      if (k < need - 1) {
+        term = term * lambda / (k + 1);
+      }
+    }
+    return Math.max(0, Math.min(1, 1 - sum));
+  }
+
   // Opening move: bid on our best face with reasonable probability
   // Consider game phase and opponent patterns for better opening
   if (!currentBid) {
@@ -292,10 +314,26 @@ onmessage = (e) => {
     const expectedUnknown = unknownDiceCount * FACE_PROB_BASE;
     let qty = Math.max(1, Math.floor(bestCount + expectedUnknown * expectedMultiplier));
 
-    // Consider if we have a strong hand (multiple of same face)
-    if (bestCount >= 2) {
-      // With multiple dice of same face, we can be more aggressive
+    // Consider hand strength more carefully
+    const handStrength = bestCount / myDice.length; // How strong is our hand (0-1)
+    
+    // With strong hands, be more aggressive
+    if (bestCount >= 3) {
+      // Very strong hand: 3+ of same face
+      qty = Math.max(qty, bestCount + 2);
+      expectedMultiplier = Math.min(1.0, expectedMultiplier + HAND_STRENGTH_BONUS);
+    } else if (bestCount >= 2) {
+      // Strong hand: 2 of same face
       qty = Math.max(qty, bestCount + 1);
+      expectedMultiplier = Math.min(1.0, expectedMultiplier + HAND_STRENGTH_BONUS * 0.6);
+    } else if (bestCount === 1 && secondBestCount === 1) {
+      // Weak hand: all different faces, be conservative
+      expectedMultiplier = Math.max(0.85, expectedMultiplier - 0.05);
+    }
+    
+    // Recalculate with adjusted multiplier if needed
+    if (bestCount < 3) {
+      qty = Math.max(1, Math.floor(bestCount + expectedUnknown * expectedMultiplier));
     }
 
     // Cap opening bid
@@ -303,7 +341,9 @@ onmessage = (e) => {
     qty = Math.min(qty, openingCap);
 
     // Push quantity up while still meeting our target probability
-    while (qty + 1 <= openingCap && probabilityAtLeast(bestFace, qty + 1) >= RAISE_TARGET) {
+    // Use adaptive target based on hand strength
+    const adaptiveRaiseTarget = handStrength > 0.4 ? RAISE_TARGET * 0.95 : RAISE_TARGET;
+    while (qty + 1 <= openingCap && probabilityAtLeast(bestFace, qty + 1) >= adaptiveRaiseTarget) {
       qty++;
     }
 
@@ -387,15 +427,32 @@ onmessage = (e) => {
   }
 
   // Find the best raise that meets our target
-  // Prefer higher probability raises, but also consider our own dice
+  // Prefer higher probability raises, but also consider our own dice and risk/reward
   let chosenRaise = null;
   let bestScore = -1;
+  const myHandStrength = Math.max(...myFaceCounts.slice(1)) / myDice.length;
+  
   for (const r of raiseCandidates) {
     const p = probabilityAtLeast(r.face, r.quantity);
-    if (p >= RAISE_TARGET) {
-      // Score combines probability and our own support
-      const mySupport = myFaceCounts[r.face] || 0;
-      const score = p * 0.7 + (mySupport / Math.max(1, r.quantity)) * 0.3 - r.cost * 0.05;
+    const mySupport = myFaceCounts[r.face] || 0;
+    const relativeStrength = mySupport / Math.max(1, r.quantity);
+    
+    // Adaptive target based on game state and hand strength
+    const adaptiveTarget = (myHandStrength > 0.3 && remainingPlayers <= 3) 
+      ? RAISE_TARGET * 0.95  // Slightly lower target with strong hand in endgame
+      : RAISE_TARGET;
+    
+    if (p >= adaptiveTarget) {
+      // Score combines probability, our own support, and risk/reward
+      // Higher probability is good, our support is good, but cost hurts
+      const riskReward = (p - adaptiveTarget) * 2; // Bonus for exceeding target
+      let score = p * 0.65 + relativeStrength * 0.25 + riskReward * 0.1 - r.cost * 0.08;
+      
+      // Bonus for quantity increases (safer) vs face increases
+      if (r.type === 'qty') {
+        score += 0.02;
+      }
+      
       if (score > bestScore) {
         chosenRaise = r;
         bestScore = score;
