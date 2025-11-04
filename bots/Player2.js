@@ -1,8 +1,8 @@
 // BOT_NAME: Monte Carlo Simulation Planner
 // Strategy: Monte Carlo Simulation - Simulates many possible dice distributions
-// Version: 1.6.0
+// Version: 1.3.0
 // Authorship: Tournament System
-// Improvements: Fine-tuned thresholds for better late-game survival, optimized raise selection
+// Improvements: Added momentum detection, optimized simulation efficiency, smarter raise selection
 
 onmessage = (e) => {
   const { state } = e.data;
@@ -31,12 +31,37 @@ onmessage = (e) => {
   const isVeryLowDice = myDiceCount <= 1;
   const isAhead = myDiceCount > avgOpponentDice * 1.2; // Be more aggressive when ahead
 
+  // Momentum detection (like MomentumAdaptive)
+  // Higher momentum = more aggressive bidding = be more skeptical
+  let momentum = 0;
+  if (currentBid && history && history.length > 0) {
+    // Look at recent raises to detect momentum
+    const recentRaises = history.filter(h => h.action === 'raise').slice(-3);
+    if (recentRaises.length > 0) {
+      const recentQuantities = recentRaises.map(r => r.on?.quantity || 0);
+      if (recentQuantities.length > 1) {
+        momentum = currentBid.quantity - (recentQuantities[0] || 0);
+      }
+    } else {
+      // Fallback: compare current bid to expected
+      const expected = unknownDiceCount * (1/6) + (myFaceCounts[currentBid.face] || 0);
+      momentum = Math.max(0, currentBid.quantity - expected);
+    }
+  }
+  const isHighMomentum = momentum >= 4;
+  const isLowMomentum = momentum <= 1;
+
   // Adaptive simulation count based on game state and time budget
   // Early game: more simulations (more unknown dice, more uncertainty)
   // Late game: fewer simulations (less unknown, faster decisions needed)
+  // Use more sims when decision is critical (low dice, high momentum)
   // Balance: more sims = better accuracy, but must stay under 200ms
-  const baseSims = 1000;
-  const adaptiveSims = Math.min(baseSims, Math.max(300, Math.floor(baseSims * Math.min(1, unknownDiceCount / 18))));
+  const baseSims = 1200; // Increased base for better accuracy
+  let adaptiveSims = Math.min(baseSims, Math.max(400, Math.floor(baseSims * Math.min(1, unknownDiceCount / 18))));
+  // Boost simulations when in critical situations
+  if (isLowDice || isHighMomentum) {
+    adaptiveSims = Math.min(baseSims, Math.floor(adaptiveSims * 1.1)); // 10% more when critical
+  }
   const N = adaptiveSims;
 
   // Fast random number generator (seeded Math.random is available)
@@ -212,7 +237,10 @@ onmessage = (e) => {
     const avgValue = totalValue / N;
     
     // Score: prefer safer raises (higher true rate) but also consider value
-    const score = trueRate * 0.6 + avgValue * 0.4;
+    // In high momentum, weight true rate more (be safer)
+    // In low momentum, can be slightly more aggressive
+    const trueRateWeight = isHighMomentum ? 0.7 : (isLowMomentum ? 0.55 : 0.6);
+    const score = trueRate * trueRateWeight + avgValue * (1 - trueRateWeight);
     
     raiseEvaluations.push({
       option,
@@ -222,27 +250,34 @@ onmessage = (e) => {
     });
   }
 
-  // Find best raise option - smarter sorting
+  // Find best raise option
   raiseEvaluations.sort((a, b) => {
-    // Primary: by score
-    if (Math.abs(b.score - a.score) > 0.005) return b.score - a.score;
-    // Secondary: prefer face bumps (usually safer than quantity increases)
+    // Primary sort: by score
+    if (Math.abs(b.score - a.score) > 0.01) return b.score - a.score;
+    // Secondary: prefer face bumps over quantity increases when close (usually safer)
     if (a.option.face > b.option.face && a.option.quantity === b.option.quantity) return -1;
     if (b.option.face > a.option.face && a.option.quantity === b.option.quantity) return 1;
-    // Tertiary: prefer lower quantity (more conservative)
+    // Tertiary: prefer lower quantity when scores are equal (more conservative)
     return a.option.quantity - b.option.quantity;
   });
   const bestRaise = raiseEvaluations[0];
 
   // Decision: Call LIAR if it's significantly better than raising
-  // Adaptive thresholds based on survival mode and position
+  // Adaptive thresholds based on survival mode, position, and momentum
+  // High momentum = more skeptical (like MomentumAdaptive)
   // When low on dice, be more conservative (higher thresholds)
   // When ahead, can be slightly more aggressive
   const baseLiarThreshold = 0.24;
-  const liarThreshold = isVeryLowDice ? 0.32 : (isLowDice ? 0.28 : (isAhead ? 0.22 : baseLiarThreshold));
+  let liarThreshold = isVeryLowDice ? 0.32 : (isLowDice ? 0.28 : (isAhead ? 0.22 : baseLiarThreshold));
+  // Adjust for momentum
+  if (isHighMomentum) liarThreshold = Math.max(liarThreshold, 0.28); // More skeptical
+  else if (isLowMomentum) liarThreshold = Math.min(liarThreshold, 0.20); // More friendly
+  
   const liarValueThreshold = isVeryLowDice ? 0.18 : (isLowDice ? 0.14 : 0.12);
   const baseRaiseThreshold = 0.38;
-  const raiseThreshold = isVeryLowDice ? 0.48 : (isLowDice ? 0.43 : (isAhead ? 0.36 : baseRaiseThreshold));
+  let raiseThreshold = isVeryLowDice ? 0.48 : (isLowDice ? 0.43 : (isAhead ? 0.36 : baseRaiseThreshold));
+  // Adjust for momentum - be more conservative when momentum is high
+  if (isHighMomentum) raiseThreshold = Math.max(raiseThreshold, 0.42);
 
   // Compare LIAR vs best raise
   const liarBetter = liarWinRate >= liarThreshold || (liarWinRate >= 0.20 && liarAvgValue >= liarValueThreshold);
@@ -272,23 +307,12 @@ onmessage = (e) => {
   if (liarWinRate >= fallbackLiarThreshold) {
     postMessage({ action: 'liar' });
   } else {
-    // Last resort: try to find any reasonable raise before giving up
-    // Check if there's a face bump that's safer
-    let safeFaceBump = null;
-    for (const eval of raiseEvaluations) {
-      if (eval.option.face > prevFace && eval.option.quantity === prevQty && eval.trueRate >= 0.30) {
-        safeFaceBump = eval.option;
-        break;
-      }
-    }
-    
-    if (safeFaceBump) {
-      postMessage({ action: 'raise', quantity: safeFaceBump.quantity, face: safeFaceBump.face });
-    } else if (isVeryLowDice && liarWinRate >= 0.15) {
+    // Last resort: minimal raise (quantity +1, same face)
+    // Only do this if we're not in very low dice mode (too risky)
+    if (isVeryLowDice && liarWinRate >= 0.15) {
       // In very low dice, prefer calling LIAR even if slightly risky
       postMessage({ action: 'liar' });
     } else {
-      // Minimal raise (quantity +1, same face)
       postMessage({ action: 'raise', quantity: prevQty + 1, face: prevFace });
     }
   }
