@@ -1,7 +1,8 @@
 // BOT_NAME: Monte Carlo Simulation Planner
 // Strategy: Monte Carlo Simulation - Simulates many possible dice distributions
-// Version: 1.0.0
+// Version: 1.2.0
 // Authorship: Tournament System
+// Improvements: Refined survival logic, position-aware thresholds (aggressive when ahead, conservative when behind)
 
 onmessage = (e) => {
   const { state } = e.data;
@@ -15,6 +16,20 @@ onmessage = (e) => {
   // Count my faces
   const myFaceCounts = Array(7).fill(0);
   for (const d of myDice) if (d >= 1 && d <= 6) myFaceCounts[d]++;
+
+  // Survival mode: be more conservative when dice count is low
+  // Calculate average opponent dice count
+  const opponentCounts = players.filter(p => p.id !== you.id && p.diceCount > 0).map(p => p.diceCount);
+  const avgOpponentDice = opponentCounts.length > 0 
+    ? opponentCounts.reduce((a, b) => a + b, 0) / opponentCounts.length 
+    : 5;
+  const minOpponentDice = opponentCounts.length > 0 ? Math.min(...opponentCounts) : 5;
+  
+  // More nuanced survival logic
+  // Only go into survival mode if we're significantly behind
+  const isLowDice = myDiceCount <= 2 && myDiceCount < avgOpponentDice;
+  const isVeryLowDice = myDiceCount <= 1;
+  const isAhead = myDiceCount > avgOpponentDice * 1.2; // Be more aggressive when ahead
 
   // Adaptive simulation count based on game state and time budget
   // Early game: more simulations (more unknown dice, more uncertainty)
@@ -70,9 +85,12 @@ onmessage = (e) => {
     // Value: higher if true (more likely to survive challenge)
     // But also consider the risk: if false, we lose a die
     // Better raises are ones that are more likely to be true
+      // Penalty for false raises is higher when we have few dice (survival mode)
+      // But when ahead, we can take more risks
+      const falsePenalty = isVeryLowDice ? -0.8 : (isLowDice ? -0.5 : (isAhead ? -0.25 : -0.3));
     return {
       isTrue,
-      value: isTrue ? 0.5 : -0.3, // True raise is safer, false is risky
+      value: isTrue ? 0.5 : falsePenalty,
       actualCount,
       claimed: quantity
     };
@@ -130,10 +148,13 @@ onmessage = (e) => {
       const avgValue = totalValue / openingSims;
       
       // Score: favor higher true rate and positive value
-      // Prefer raises that are likely (≥40%) but also aggressive enough
-      const score = trueRate * 0.65 + avgValue * 0.35;
+      // In survival mode, be more conservative
+      // When ahead, can be slightly more aggressive
+      const minTrueRate = isLowDice ? 0.43 : (isAhead ? 0.36 : 0.38);
+      const scoreWeight = isLowDice ? 0.72 : (isAhead ? 0.60 : 0.65);
+      const score = trueRate * scoreWeight + avgValue * (1 - scoreWeight);
       
-      if (score > bestScore && trueRate >= 0.38) { // Only consider if ≥38% likely
+      if (score > bestScore && trueRate >= minTrueRate) {
         bestScore = score;
         bestQty = qty;
       }
@@ -206,13 +227,18 @@ onmessage = (e) => {
   const bestRaise = raiseEvaluations[0];
 
   // Decision: Call LIAR if it's significantly better than raising
-  // Learned from baseline strategies: optimal thresholds around 0.22-0.28
-  const liarThreshold = 0.24; // Call LIAR if win rate >= 24%
-  const liarValueThreshold = 0.12; // Or if value is positive enough
+  // Adaptive thresholds based on survival mode and position
+  // When low on dice, be more conservative (higher thresholds)
+  // When ahead, can be slightly more aggressive
+  const baseLiarThreshold = 0.24;
+  const liarThreshold = isVeryLowDice ? 0.32 : (isLowDice ? 0.28 : (isAhead ? 0.22 : baseLiarThreshold));
+  const liarValueThreshold = isVeryLowDice ? 0.18 : (isLowDice ? 0.14 : 0.12);
+  const baseRaiseThreshold = 0.38;
+  const raiseThreshold = isVeryLowDice ? 0.48 : (isLowDice ? 0.43 : (isAhead ? 0.36 : baseRaiseThreshold));
 
   // Compare LIAR vs best raise
   const liarBetter = liarWinRate >= liarThreshold || (liarWinRate >= 0.20 && liarAvgValue >= liarValueThreshold);
-  const raiseBetter = bestRaise && bestRaise.trueRate >= 0.38; // Raise threshold: 38% (learned from baselines)
+  const raiseBetter = bestRaise && bestRaise.trueRate >= raiseThreshold;
 
   if (liarBetter) {
     // Call LIAR if it's clearly better OR if raise is weak
@@ -233,10 +259,18 @@ onmessage = (e) => {
   }
 
   // Fallback: if no good raise, call LIAR (better than making a bad raise)
-  if (liarWinRate >= 0.18) {
+  // But in survival mode, be even more conservative
+  const fallbackLiarThreshold = isVeryLowDice ? 0.25 : (isLowDice ? 0.22 : 0.18);
+  if (liarWinRate >= fallbackLiarThreshold) {
     postMessage({ action: 'liar' });
   } else {
     // Last resort: minimal raise (quantity +1, same face)
-    postMessage({ action: 'raise', quantity: prevQty + 1, face: prevFace });
+    // Only do this if we're not in very low dice mode (too risky)
+    if (isVeryLowDice && liarWinRate >= 0.15) {
+      // In very low dice, prefer calling LIAR even if slightly risky
+      postMessage({ action: 'liar' });
+    } else {
+      postMessage({ action: 'raise', quantity: prevQty + 1, face: prevFace });
+    }
   }
 };

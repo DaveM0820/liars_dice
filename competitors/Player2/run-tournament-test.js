@@ -3,44 +3,30 @@
 
 const fs = require('fs');
 const path = require('path');
-const { Worker } = require('worker_threads');
 const vm = require('vm');
 
-console.log('🏆 Running Tournament Test for Player2\n');
+console.log('🏆 Running Tournament Test for Player2 (v1.1.0)\n');
 console.log('='.repeat(60));
 
 // Configuration
-const ROUNDS = 500; // More rounds for better statistics
+const ROUNDS = 500;
 const SEED = 10185;
-const MAX_PLAYERS = 5;
 
 // Load bot files
 const botsDir = path.join(__dirname, '../../bots');
-const player2File = path.join(botsDir, 'Player2.js');
-const baselineFile = path.join(botsDir, 'Baseline.js');
-const probTunedFile = path.join(botsDir, 'ProbabilityTuned.js');
-const momentumFile = path.join(botsDir, 'MomentumAdaptive.js');
-const aggroFile = path.join(botsDir, 'AggroBluffer.js');
+const botFiles = ['Player2.js', 'Baseline.js', 'ProbabilityTuned.js', 'MomentumAdaptive.js', 'AggroBluffer.js'];
 
 // Check if bots exist
-const requiredBots = [
-  { name: 'Player2', file: player2File },
-  { name: 'Baseline', file: baselineFile },
-  { name: 'ProbabilityTuned', file: probTunedFile },
-  { name: 'MomentumAdaptive', file: momentumFile },
-  { name: 'AggroBluffer', file: aggroFile }
-];
-
-for (const bot of requiredBots) {
-  if (!fs.existsSync(bot.file)) {
-    console.error(`❌ Missing bot: ${bot.name} at ${bot.file}`);
+for (const file of botFiles) {
+  if (!fs.existsSync(path.join(botsDir, file))) {
+    console.error(`❌ Missing bot: ${file}`);
     process.exit(1);
   }
 }
 
 console.log('✅ All bots found\n');
 
-// RNG for deterministic results
+// RNG
 function makeRNG(seed) {
   let s = seed >>> 0;
   return function rand() {
@@ -51,9 +37,7 @@ function makeRNG(seed) {
 
 function rollDice(rng, n) {
   const dice = [];
-  for (let i = 0; i < n; i++) {
-    dice.push(1 + Math.floor(rng() * 6));
-  }
+  for (let i = 0; i < n; i++) dice.push(1 + Math.floor(rng() * 6));
   return dice;
 }
 
@@ -73,7 +57,7 @@ function legalRaise(prev, q, f) {
   return (q > quantity) || (q === quantity && f > face);
 }
 
-// Create bot worker (simplified - runs in VM)
+// Create bot worker
 function createBotWorker(botCode, seed) {
   const sandbox = {
     Math: {
@@ -86,9 +70,7 @@ function createBotWorker(botCode, seed) {
       round: Math.round,
       pow: Math.pow,
       sqrt: Math.sqrt,
-      abs: Math.abs,
-      sin: Math.sin,
-      cos: Math.cos
+      abs: Math.abs
     },
     Array: Array,
     Object: Object,
@@ -98,9 +80,7 @@ function createBotWorker(botCode, seed) {
     parseFloat: parseFloat,
     isNaN: isNaN,
     isFinite: isFinite,
-    postMessage: (msg) => {
-      sandbox.lastResponse = msg;
-    },
+    postMessage: (msg) => { sandbox.lastResponse = msg; },
     onmessage: null,
     self: {},
     lastResponse: null,
@@ -122,7 +102,6 @@ function createBotWorker(botCode, seed) {
         try {
           sandbox.onmessage(event);
         } catch (err) {
-          console.error(`Bot error: ${err.message}`);
           return null;
         }
       }
@@ -131,7 +110,6 @@ function createBotWorker(botCode, seed) {
   };
 }
 
-// Load bot code
 function loadBotCode(filePath) {
   return fs.readFileSync(filePath, 'utf8');
 }
@@ -139,10 +117,7 @@ function loadBotCode(filePath) {
 // Play one hand
 function playHand(botFiles, botCodes, seed) {
   const rng = makeRNG(seed);
-  
-  const workers = botCodes.map((code, i) => 
-    createBotWorker(code, seed + i * 101)
-  );
+  const workers = botCodes.map((code, i) => createBotWorker(code, seed + i * 101));
 
   const players = botFiles.map((file, i) => ({
     id: 'P' + (i + 1),
@@ -152,25 +127,18 @@ function playHand(botFiles, botCodes, seed) {
     worker: workers[i]
   }));
 
-  const aliveCount = () => players.filter(p => p.diceCount > 0).length;
-  const playersArray = () => players.map(p => ({
-    id: p.id,
-    diceCount: p.diceCount
-  }));
-
+  const playersArray = () => players.map(p => ({ id: p.id, diceCount: p.diceCount }));
   let startIdx = 0;
   let handCount = 0;
 
-  while (aliveCount() > 1) {
+  while (players.filter(p => p.diceCount > 0).length > 1) {
     handCount++;
     const hidden = players.map(p => rollDice(rng, p.diceCount));
-    
     let turnIdx = startIdx;
     let currentBid = null;
     let turnGuard = 0;
-    const TURN_GUARD_MAX = 200;
 
-    while (turnGuard++ < TURN_GUARD_MAX) {
+    while (turnGuard++ < 200) {
       const active = turnIdx % players.length;
       const player = players[active];
 
@@ -184,17 +152,13 @@ function playHand(botFiles, botCodes, seed) {
         players: playersArray(),
         currentBid,
         history: [],
-        rules: {
-          faces: [1, 2, 3, 4, 5, 6],
-          mustIncreaseQuantityOrFace: true
-        },
+        rules: { faces: [1, 2, 3, 4, 5, 6], mustIncreaseQuantityOrFace: true },
         seed: seed + handCount * 1000 + turnIdx
       };
 
       const action = player.worker.ask(state);
-      
+
       if (!action || !action.action) {
-        // Invalid action - player loses a die, others don't
         player.diceCount = Math.max(0, player.diceCount - 1);
         if (player.diceCount === 0) {
           startIdx = (active + 1) % players.length;
@@ -206,18 +170,14 @@ function playHand(botFiles, botCodes, seed) {
 
       if (action.action === 'liar') {
         if (!currentBid) {
-          // Can't call LIAR on nothing - caller loses a die
           player.diceCount = Math.max(0, player.diceCount - 1);
         } else {
           const { quantity: q, face: f } = currentBid;
           const total = countFace(hidden, f);
           const claimTrue = total >= q;
-
           if (claimTrue) {
-            // Claim was true - caller loses a die
             player.diceCount = Math.max(0, player.diceCount - 1);
           } else {
-            // Claim was false - all others lose a die (bidder loses, not caller)
             const others = players.filter((p, i) => i !== active && p.diceCount > 0);
             others.forEach(p => p.diceCount = Math.max(0, p.diceCount - 1));
           }
@@ -227,7 +187,6 @@ function playHand(botFiles, botCodes, seed) {
       } else if (action.action === 'raise') {
         const { quantity: q, face: f } = action;
         if (!legalRaise(currentBid, q, f)) {
-          // Illegal bid - player loses a die, others don't
           player.diceCount = Math.max(0, player.diceCount - 1);
           if (player.diceCount === 0) {
             startIdx = (active + 1) % players.length;
@@ -243,26 +202,16 @@ function playHand(botFiles, botCodes, seed) {
       }
     }
 
-    if (turnGuard >= TURN_GUARD_MAX) {
-      // Force elimination
+    if (turnGuard >= 200) {
       const firstAlive = players.findIndex(p => p.diceCount > 0);
-      if (firstAlive >= 0) {
-        players[firstAlive].diceCount = 0;
-      }
+      if (firstAlive >= 0) players[firstAlive].diceCount = 0;
     }
   }
 
-  // Determine placements
   const alive = players.filter(p => p.diceCount > 0);
   const winner = alive[0];
   const placements = {};
-
-  // Winner gets 1st place
-  if (winner) {
-    placements[winner.file] = 1;
-  }
-
-  // Others get eliminated in order (simplified)
+  if (winner) placements[winner.file] = 1;
   const eliminated = players.filter(p => p.diceCount === 0);
   let place = players.length;
   for (const p of eliminated) {
@@ -272,7 +221,7 @@ function playHand(botFiles, botCodes, seed) {
   return { winner: winner?.file, placements, handCount };
 }
 
-// Tournament scoring
+// Scoring
 const PLACEMENT_POINTS = [0, 100, 55, 35, 20, 5];
 function pointsForPlace(place) {
   return PLACEMENT_POINTS[Math.min(place, PLACEMENT_POINTS.length - 1)] || 0;
@@ -282,22 +231,16 @@ function pointsForPlace(place) {
 async function runTournament() {
   console.log(`📊 Running ${ROUNDS} rounds with seed ${SEED}\n`);
   console.log('Competitors:');
-  console.log('  - Player2 (Monte Carlo Simulation)');
+  console.log('  - Player2 (Monte Carlo v1.1.0 - with survival logic)');
   console.log('  - Baseline');
   console.log('  - ProbabilityTuned');
   console.log('  - MomentumAdaptive');
   console.log('  - AggroBluffer\n');
 
-  const botFiles = ['Player2.js', 'Baseline.js', 'ProbabilityTuned.js', 'MomentumAdaptive.js', 'AggroBluffer.js'];
   const botCodes = botFiles.map(file => loadBotCode(path.join(botsDir, file)));
-
   const stats = {};
   botFiles.forEach(file => {
-    stats[file] = {
-      wins: 0,
-      totalPoints: 0,
-      placements: Array(6).fill(0)
-    };
+    stats[file] = { wins: 0, totalPoints: 0, placements: Array(6).fill(0) };
   });
 
   const startTime = Date.now();
@@ -306,10 +249,7 @@ async function runTournament() {
     const seed = SEED + round * 1000;
     const result = playHand(botFiles, botCodes, seed);
 
-    if (result.winner) {
-      stats[result.winner].wins++;
-    }
-
+    if (result.winner) stats[result.winner].wins++;
     for (const [file, place] of Object.entries(result.placements)) {
       if (stats[file]) {
         stats[file].placements[place]++;
@@ -317,7 +257,7 @@ async function runTournament() {
       }
     }
 
-    if (round % 25 === 0) {
+    if (round % 50 === 0) {
       process.stdout.write(`\r⏳ Progress: ${round}/${ROUNDS} rounds...`);
     }
   }
@@ -325,7 +265,6 @@ async function runTournament() {
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
   console.log(`\r✅ Completed ${ROUNDS} rounds in ${elapsed}s\n`);
 
-  // Calculate averages
   console.log('='.repeat(60));
   console.log('📊 TOURNAMENT RESULTS');
   console.log('='.repeat(60));
@@ -352,7 +291,7 @@ async function runTournament() {
   });
 
   console.log('\n' + '='.repeat(60));
-  
+
   const player2Result = results.find(r => r.file === 'Player2.js');
   if (player2Result) {
     const rank = results.findIndex(r => r.file === 'Player2.js') + 1;
@@ -360,14 +299,18 @@ async function runTournament() {
     console.log(`   Rank: ${rank}/${results.length}`);
     console.log(`   Average TS: ${player2Result.avgTS.toFixed(2)}`);
     console.log(`   Wins: ${player2Result.wins}/${ROUNDS} (${player2Result.winPct}%)`);
-    
+
     if (rank === 1) {
       console.log(`\n🏆 Player2 is WINNING!`);
     } else {
       const leader = results[0];
       const gap = leader.avgTS - player2Result.avgTS;
+      const improvement = player2Result.avgTS - 42.05; // Previous score
       console.log(`\n📈 Gap to leader: ${gap.toFixed(2)} points`);
       console.log(`   Leader: ${leader.name} (${leader.avgTS.toFixed(2)} avg TS)`);
+      if (improvement > 0) {
+        console.log(`   ✅ Improvement: +${improvement.toFixed(2)} points from v1.0.0`);
+      }
     }
   }
 
@@ -375,9 +318,7 @@ async function runTournament() {
   return results;
 }
 
-// Run the tournament
 runTournament().catch(err => {
   console.error('\n❌ Tournament failed:', err);
-  console.error(err.stack);
   process.exit(1);
 });
