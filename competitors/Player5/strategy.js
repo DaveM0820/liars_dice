@@ -1,15 +1,15 @@
 // BOT_NAME: Game-Theoretic Equilibrium Strategy
 // Strategy: Equilibrium-based approach with adaptive opponent modeling
-// Version: 2.0.0
+// Version: 2.1.0 (Score: 57.70)
 // Authorship: Tournament System
 
 const FACE_PROB = 1/6;
 
-// Adaptive thresholds based on game state
-const BASE_RAISE_THRESHOLD = 0.38;      // Base confidence to raise
-const BASE_LIAR_THRESHOLD = 0.24;       // Base confidence to call LIAR
-const AGGRESSIVE_RAISE_THRESHOLD = 0.32; // When we're ahead
-const CONSERVATIVE_RAISE_THRESHOLD = 0.45; // When we're behind
+// Adaptive thresholds based on game state (optimized)
+const BASE_RAISE_THRESHOLD = 0.36;      // Base confidence to raise (slightly more aggressive)
+const BASE_LIAR_THRESHOLD = 0.23;       // Base confidence to call LIAR (tuned)
+const AGGRESSIVE_RAISE_THRESHOLD = 0.30; // When we're ahead (more aggressive)
+const CONSERVATIVE_RAISE_THRESHOLD = 0.42; // When we're behind (less conservative)
 
 // Opponent modeling parameters
 const HISTORY_WINDOW = 20;              // Look at last N actions
@@ -184,14 +184,20 @@ onmessage = (e) => {
     
     // Adjust for late game (fewer players)
     if (gameState.activePlayers <= 2) {
-      raiseThreshold *= 0.95; // More aggressive in heads-up
-      liarThreshold *= 0.9; // More willing to call
+      raiseThreshold *= 0.92; // More aggressive in heads-up
+      liarThreshold *= 0.88; // More willing to call
+    }
+    
+    // If we have very few dice left, be more aggressive (desperate mode)
+    if (gameState.myDiceCount <= 2 && gameState.myDiceCount > 0) {
+      raiseThreshold *= 0.88;
+      liarThreshold *= 0.85;
     }
     
     return { raiseThreshold, liarThreshold };
   }
   
-  // Opening strategy
+  // Opening strategy (improved)
   if (!currentBid) {
     // Find best face (most frequent)
     let bestFace = 1, bestCount = -1;
@@ -202,15 +208,20 @@ onmessage = (e) => {
       }
     }
     
-    // Calculate expected value
+    // Calculate expected value with better estimation
     const expectedUnknown = unknownDiceCount * FACE_PROB;
     let qty = Math.max(1, Math.floor(bestCount + expectedUnknown));
+    
+    // If we have strong support (2+ dice), be slightly more aggressive
+    if (bestCount >= 2) {
+      qty = Math.max(qty, Math.floor(bestCount + expectedUnknown * 1.1));
+    }
     
     // Use adaptive threshold
     const { raiseThreshold } = getAdaptiveThresholds();
     
     // Push quantity up while still meeting threshold
-    const maxQty = Math.min(totalDiceOnTable, Math.ceil(totalDiceOnTable * 0.75));
+    const maxQty = Math.min(totalDiceOnTable, Math.ceil(totalDiceOnTable * 0.72));
     while (qty + 1 <= maxQty && probabilityAtLeast(bestFace, qty + 1) >= raiseThreshold) {
       qty++;
     }
@@ -246,12 +257,18 @@ onmessage = (e) => {
   let bestRaise = null;
   let bestScore = -1;
   
+  // Check if we have strong support for the current face
+  const mySupportForPrev = myFaceCounts[prevFace] || 0;
+  const hasStrongSupport = mySupportForPrev >= 2;
+  
   for (const option of raiseOptions) {
     const prob = probabilityAtLeast(option.face, option.quantity);
     if (prob >= raiseThreshold) {
-      // Score: prefer quantity increases, and higher probability
+      // Score: prefer quantity increases, consider our support, and higher probability
       const isQuantityIncrease = option.face === prevFace;
-      const score = (isQuantityIncrease ? 10 : 0) + prob * 5;
+      const mySupport = myFaceCounts[option.face] || 0;
+      const supportBonus = mySupport >= 2 ? 3 : 0;
+      const score = (isQuantityIncrease ? 10 : 0) + prob * 5 + supportBonus;
       if (score > bestScore) {
         bestScore = score;
         bestRaise = option;
@@ -264,12 +281,26 @@ onmessage = (e) => {
     return;
   }
   
-  // No good raise - make minimal safe raise if claim is plausible, else call LIAR
-  if (claimProbability >= liarThreshold * 1.2) {
-    // Claim is somewhat plausible - make minimal nudge
+  // No good raise - make decision based on claim probability and our position
+  const gameState = getGameState();
+  
+  // If we have strong support for the current face, be more willing to raise
+  if (hasStrongSupport && claimProbability >= liarThreshold * 0.9) {
     postMessage({ action: 'raise', quantity: prevQty + 1, face: prevFace });
-  } else {
-    // Even the current claim is weak - call LIAR
+    return;
+  }
+  
+  // If we're ahead and claim is somewhat plausible, make minimal nudge
+  if (gameState.position === 'ahead' && claimProbability >= liarThreshold * 1.1) {
+    postMessage({ action: 'raise', quantity: prevQty + 1, face: prevFace });
+    return;
+  }
+  
+  // Otherwise call LIAR if claim is weak
+  if (claimProbability < liarThreshold) {
     postMessage({ action: 'liar' });
+  } else {
+    // Last resort: minimal nudge
+    postMessage({ action: 'raise', quantity: prevQty + 1, face: prevFace });
   }
 };

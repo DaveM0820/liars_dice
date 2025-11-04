@@ -1,6 +1,6 @@
 // BOT_NAME: Game-Theoretic Equilibrium Strategy
 // Strategy: Equilibrium-based approach with adaptive opponent modeling
-// Version: 2.1.0 (Score: 57.70)
+// Version: 2.1.0
 // Authorship: Tournament System
 
 const FACE_PROB = 1/6;
