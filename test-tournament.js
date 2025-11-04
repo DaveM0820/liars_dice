@@ -73,48 +73,57 @@ function createBotFunction(botCode) {
     let result = null;
     const postMessage = (msg) => { result = msg; };
     
+    // Create self context for Worker-like environment
+    const self = {
+      belief: {},
+      stats: {},
+      equilibriumPolicy: {},
+      onmessage: null
+    };
+    
     // Execute bot code in a sandboxed way
-    // The bot assigns: onmessage = (e) => { ... }
-    // We need to capture that assignment and call it
     try {
-      // Use eval in a controlled scope to capture onmessage
-      const botScope = {
+      const vm = require('vm');
+      const context = vm.createContext({
+        self: self,
         postMessage: postMessage,
-        onmessage: null
-      };
+        onmessage: null,
+        Math: Math,
+        Array: Array,
+        Object: Object,
+        String: String,
+        Number: Number,
+        Boolean: Boolean,
+        console: { error: () => {}, log: () => {} }
+      });
       
-      // Execute the bot code which will assign to onmessage
-      const wrappedCode = `
-        (function(postMessage) {
-          let onmessage;
-          ${botCode}
-          return onmessage;
-        })
-      `;
+      vm.runInContext(botCode, context);
       
-      const getHandler = eval(wrappedCode);
-      const handler = getHandler(postMessage);
-      
-      if (handler && typeof handler === 'function') {
-        handler({ data: { state } });
+      if (context.onmessage && typeof context.onmessage === 'function') {
+        context.onmessage({ data: { state } });
+      } else if (self.onmessage && typeof self.onmessage === 'function') {
+        self.onmessage({ data: { state } });
       } else {
         throw new Error('Handler not found');
       }
     } catch (e) {
-      // Fallback: try with vm module or direct eval
+      // Fallback: try direct eval with self
       try {
-        const vm = require('vm');
-        const context = {
-          postMessage: (msg) => { result = msg; },
-          onmessage: null
-        };
-        vm.createContext(context);
-        vm.runInContext(botCode, context);
-        if (context.onmessage) {
-          context.onmessage({ data: { state } });
-        }
+        const wrapped = `
+          (function(postMessage, self, state) {
+            let onmessage;
+            ${botCode}
+            if (typeof onmessage === 'function') {
+              onmessage({ data: { state } });
+            } else if (typeof self.onmessage === 'function') {
+              self.onmessage({ data: { state } });
+            }
+          })
+        `;
+        const fn = eval(wrapped);
+        fn(postMessage, self, state);
       } catch (e2) {
-        console.error(`Bot error for ${state.you?.id || 'unknown'}: ${e2.message}`);
+        // Silently fail and return default
         return { action: 'liar' };
       }
     }
@@ -351,13 +360,15 @@ function runTournament(botFiles, rounds = 100, seed = 10185) {
 // Main
 if (require.main === module) {
   const args = process.argv.slice(2);
-  const testType = args[0] || 'mixed';
+  const testType = args[0] || 'players';
   
   let testBots;
   if (testType === 'baseline') {
     testBots = ['Player4.js', 'Baseline.js', 'Baseline.js', 'Baseline.js', 'Baseline.js'];
   } else if (testType === 'mixed') {
     testBots = ['Player4.js', 'ProbabilityTuned.js', 'MomentumAdaptive.js', 'AggroBluffer.js', 'Baseline.js'];
+  } else if (testType === 'players') {
+    testBots = ['Player4.js', 'Player1.js', 'Player2.js', 'Player3.js', 'Player5.js'];
   } else {
     testBots = ['Player4.js', 'Baseline.js', 'Baseline.js', 'Baseline.js', 'Baseline.js'];
   }

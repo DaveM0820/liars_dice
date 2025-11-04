@@ -1,6 +1,6 @@
 // BOT_NAME: Dice-Count Adaptive Risk Strategy
 // Strategy: Adapts risk-taking based on dice counts and game stage
-// Version: 1.0.0
+// Version: 1.1.0
 // Authorship: Tournament System
 
 const FACE_PROB = 1/6;
@@ -83,8 +83,13 @@ onmessage = (e) => {
     const isAboveAvg = myDiceCount > avgDice;
     const leadMargin = maxDice - myDiceCount;
     const trailMargin = myDiceCount - minDice;
+    
+    // Calculate position strength (0-1 scale)
+    const positionStrength = diceCounts.length > 1 
+      ? (diceAbove) / (diceCounts.length - 1)
+      : 0.5;
 
-    // Position-based adjustment with gradient
+    // Position-based adjustment - balanced approach
     if (isLeading) {
       // Leading: be conservative
       liarThreshold = LEADING_LIAR_THRESHOLD;
@@ -102,16 +107,28 @@ onmessage = (e) => {
       liarThreshold = BASE_LIAR_THRESHOLD + 0.03;
       raiseThreshold = BASE_RAISE_THRESHOLD - 0.05;
     }
+    
+    // Fine-tune based on position strength (more subtle)
+    const strengthAdjustment = (0.5 - positionStrength) * 0.03;
+    liarThreshold += strengthAdjustment;
+    raiseThreshold -= strengthAdjustment * 0.8; // Less impact on raise threshold
 
     // Late game adjustment (total dice < 10)
     if (totalDiceOnTable < 10) {
-      liarThreshold = Math.max(liarThreshold, LATE_GAME_LIAR_THRESHOLD);
-      raiseThreshold = Math.max(raiseThreshold, LATE_GAME_RAISE_THRESHOLD);
+      // In late game, be more conservative overall (fewer dice = more certain outcomes)
+      if (isTrailing) {
+        // But still aggressive if trailing
+        liarThreshold = Math.max(liarThreshold, 0.28);
+        raiseThreshold = Math.min(raiseThreshold, 0.35);
+      } else {
+        liarThreshold = Math.max(liarThreshold, LATE_GAME_LIAR_THRESHOLD);
+        raiseThreshold = Math.max(raiseThreshold, LATE_GAME_RAISE_THRESHOLD);
+      }
     }
 
     // Ensure thresholds are within valid ranges
-    liarThreshold = Math.max(0.10, Math.min(0.35, liarThreshold));
-    raiseThreshold = Math.max(0.25, Math.min(0.60, raiseThreshold));
+    liarThreshold = Math.max(0.12, Math.min(0.30, liarThreshold));
+    raiseThreshold = Math.max(0.30, Math.min(0.55, raiseThreshold));
 
     return { liarThreshold, raiseThreshold };
   }
@@ -129,7 +146,21 @@ onmessage = (e) => {
 
     const { raiseThreshold } = getAdjustedThresholds();
     const expectedUnknown = unknownDiceCount * FACE_PROB;
-    let qty = Math.max(1, Math.floor(bestCount + expectedUnknown * 0.9)); // Start slightly conservative
+    
+    // More aggressive opening based on position
+    const diceCounts = players.map(p => p.diceCount);
+    const myRank = diceCounts.filter(c => c > myDiceCount).length;
+    const isTrailing = myDiceCount === Math.min(...diceCounts);
+    
+    // Adjust opening based on position
+    let openingMultiplier = 0.9;
+    if (isTrailing) {
+      openingMultiplier = 1.0; // More aggressive when trailing
+    } else if (myRank === 0) {
+      openingMultiplier = 0.85; // More conservative when leading
+    }
+    
+    let qty = Math.max(1, Math.floor(bestCount + expectedUnknown * openingMultiplier));
 
     // Push quantity up while still meeting our raise threshold
     while (qty + 1 <= totalDiceOnTable && probabilityAtLeast(bestFace, qty + 1) >= raiseThreshold) {
@@ -137,7 +168,7 @@ onmessage = (e) => {
     }
 
     // Ensure we don't open with an absurdly high bid
-    const maxReasonableOpening = Math.ceil(totalDiceOnTable * 0.75);
+    const maxReasonableOpening = Math.ceil(totalDiceOnTable * 0.78);
     qty = Math.min(qty, maxReasonableOpening);
 
     postMessage({ action: 'raise', quantity: qty, face: bestFace });
