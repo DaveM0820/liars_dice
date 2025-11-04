@@ -1,11 +1,11 @@
 // BOT_NAME: Dice-Count Adaptive Risk Strategy
 // Strategy: Adapts risk-taking based on dice counts and game stage
-// Version: 1.1.0
+// Version: 1.5.0
 // Authorship: Tournament System
 
 const FACE_PROB = 1/6;
 
-// Base thresholds
+// Base thresholds - balanced approach
 const BASE_LIAR_THRESHOLD = 0.20;
 const BASE_RAISE_THRESHOLD = 0.40;
 
@@ -13,7 +13,7 @@ const BASE_RAISE_THRESHOLD = 0.40;
 const LEADING_LIAR_THRESHOLD = 0.15;   // Conservative when ahead
 const LEADING_RAISE_THRESHOLD = 0.50;  // Only raise on high confidence
 const TRAILING_LIAR_THRESHOLD = 0.30;  // Aggressive when behind
-const TRAILING_RAISE_THRESHOLD = 0.30; // Take more risks
+const TRAILING_RAISE_THRESHOLD = 0.30; // Take more risks when trailing
 
 // Late game adjustments (when total dice < 10)
 const LATE_GAME_LIAR_THRESHOLD = 0.25;  // Minimum threshold in late game
@@ -48,19 +48,26 @@ onmessage = (e) => {
   function binomTail(n, k, p) {
     if (k <= 0) return 1;
     if (k > n) return 0;
+    if (k === n) return Math.pow(p, n);
     let term = binomPMF(n, k, p);
     let sum = term;
     for (let x = k + 1; x <= n; x++) {
       term = term * ((n - (x - 1)) / x) * (p / (1 - p));
       sum += term;
-      if (term < 1e-12) break;
+      if (term < 1e-15) break; // More precise
     }
     return clamp01(sum);
   }
 
+  // Improved probability calculation - use exact binomial for accuracy
   function probabilityAtLeast(face, qty) {
     const mySupport = myFaceCounts[face] || 0;
     const needFromUnknown = Math.max(0, qty - mySupport);
+    
+    if (needFromUnknown <= 0) return 1;
+    if (needFromUnknown > unknownDiceCount) return 0;
+    
+    // Always use exact binomial calculation for accuracy
     return binomTail(unknownDiceCount, needFromUnknown, FACE_PROB);
   }
 
@@ -153,7 +160,7 @@ onmessage = (e) => {
     const isTrailing = myDiceCount === Math.min(...diceCounts);
     
     // Adjust opening based on position
-    let openingMultiplier = 0.9;
+    let openingMultiplier = 0.90;
     if (isTrailing) {
       openingMultiplier = 1.0; // More aggressive when trailing
     } else if (myRank === 0) {
