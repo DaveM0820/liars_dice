@@ -118,7 +118,7 @@ onmessage = (e) => {
     let recentBluffs = 0;
     for (const action of veryRecent) {
       if (action.action === 'raise' && action.quantity && action.face) {
-        const expected = currentTableDice * FACE_PROB;
+        const expected = totalDiceOnTable * FACE_PROB;
         if (action.quantity > expected * 1.25) {
           recentBluffs++;
         }
