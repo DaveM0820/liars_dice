@@ -199,7 +199,7 @@ async function playGame(botFiles, seed) {
   return { winner: winner?.id, placements, workers: workers.map(w => ({ file: w.file, id: w.player.id })) };
 }
 
-async function runTournament(rounds = 100) {
+async function runTournament(rounds = 200) {
   console.log('🏆 Tournament Simulator - Player5 vs 4× Baseline\n');
   console.log('='.repeat(60));
   console.log(`Running ${rounds} rounds...\n`);
