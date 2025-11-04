@@ -1,0 +1,735 @@
+Top 5 Deterministic Liar’s Dice Strategies for a 5-
+Player Bot
+In a 5-player, turn-based Liar’s Dice tournament (no wilds, deterministic logic), the following five strategies
+have proven highly effective. Each strategy is described along with its core philosophy, pseudocode for
+integration into a WebWorker-based bot framework, and an evaluation of implementation complexity
+(within ~200ms per move, using deterministic logic).
+1. Bayesian Inference Strategy
+Core Logic & Philosophy: This strategy treats opponents’ bids as informative signals about their hidden
+dice. Instead of assuming all unseen dice are uniformly random, the bot updates its beliefs whenever a
+player makes a bid. For example, if an opponent bids a high quantity of a certain face, it infers that
+opponent likely holds at least some of that face. By using Bayesian reasoning on the “information
+exchanged by players’ decisions” , the bot refines the probability that any given bid is truthful. It aims
+to call bluffs only when its updated model deems a claim very unlikely, and otherwise raise with bids that
+are plausible under the refined belief distribution. Over a 2500-game run, this bot can also adjust its prior
+assumptions based on aggregate outcomes (e.g. if bluffs are frequently caught, it may become more
+skeptical overall). The philosophy is to make maximally informed decisions by learning everything
+possible from the bidding history.
+Pseudocode:
+onmessage = (e) => {
+const { you, players, currentBid, history } = e.data.state;
+const myDice = you.dice;
+const totalDice = players.reduce((sum,p)=> sum + p.diceCount, 0);
+const unknownDiceCount = totalDice - myDice.length;
+// Belief model: initialize uniform probabilities for unseen dice
+// belief[playerId][face] = estimated count of 'face' dice that player holds.
+if (!self.belief) {
+self.belief = {};
+for (let p of players) {
+if (p.id !== you.id) {
+self.belief[p.id] = Array(7).fill(0);
+// Start with expected count = (p.diceCount * 1/6) for each face
+for (let face = 1; face <= 6; face++) {
+self.belief[p.id][face] = p.diceCount / 6;
+}
+}
+1
+1
+}
+}
+// Update beliefs based on the latest bid in history (if any new info)
+if (history.length > 0) {
+const lastAction = history[history.length - 1];
+if (lastAction.action === 'raise') {
+const bidder = lastAction.actor;
+const { quantity: q, face: f } = lastAction;
+// If an opponent raised on face f, assume they likely have at least one
+f.
+if (bidder !== you.id) {
+// Increase belief that this bidder holds face f (up to their dice
+count)
+self.belief[bidder][f] =
+Math.min(players.find(p=>p.id===bidder).diceCount,
+Math.max(self.belief[bidder][f], 1));
+}
+}
+}
+// Helper: calculate probability current bid (qty of face) is true under
+beliefs
+function probabilityBidTrue(qty, face) {
+let have = myDice.filter(d => d === face).length;
+let need = qty - have;
+if (need < 0) return 1; // I alone exceed the bid
+// Estimate expected count of `face` among unknown dice using beliefs
+let expectedUnknown = 0;
+for (let p of players) {
+if (p.id !== you.id) {
+// use belief or default 1/6 expectation for this face
+expectedUnknown += self.belief[p.id]
+? Math.min(p.diceCount, self.belief[p.id][face])
+: p.diceCount/6;
+}
+}
+// Use a binomial-tail approximation around the expectedUnknown
+const mean = expectedUnknown;
+const variance = expectedUnknown * (5/6); // rough variance assuming binary
+outcome per die
+const stddev = Math.sqrt(variance);
+// Approximate probability at least `need` successes (Chebyshev bound or
+normal approx)
+let prob = 0;
+if (need <= mean) {
+prob = 1; // if need is below expected, assume highly likely
+} else {
+2
+// if need > mean, estimate probability with tail of normal distribution
+const z = (need - mean) / (stddev || 1);
+// simple normal tail approximation
+prob = Math.exp(-0.5 * z * z);
+}
+return Math.max(0, Math.min(1, prob));
+}
+if (!currentBid) {
+// Opening bid: choose face I have the most of, quantity near expectation
+const counts = Array(7).fill(0);
+myDice.forEach(d => counts[d]++);
+let bestFace = counts.indexOf(Math.max(...counts));
+if (bestFace < 1) bestFace = 1;
+// expected total of bestFace = my count + expected others
+let expTotal = counts[bestFace] + (unknownDiceCount * (1/6));
+let openQty = Math.max(1, Math.floor(expTotal));
+postMessage({ action: 'raise', quantity: openQty, face: bestFace });
+return;
+}
+const { quantity: currQ, face: currF } = currentBid;
+const claimProb = probabilityBidTrue(currQ, currF);
+// Decide to call liar or raise
+const LIAR_THRESH = 0.20; // base threshold for calling liar
+// If our belief-adjusted probability of truth is very low, call liar
+if (claimProb < LIAR_THRESH) {
+postMessage({ action: 'liar' });
+return;
+}
+// Otherwise, attempt a minimal credible raise
+// Find the smallest legal raise (either +1 quantity or higher face)
+const raiseOptions = [{q: currQ + 1, f: currF}].concat(
+currF < 6 ? [{q: currQ, f: currF + 1}] : []);
+for (let opt of raiseOptions) {
+if (probabilityBidTrue(opt.q, opt.f) >= LIAR_THRESH) {
+postMessage({ action: 'raise', quantity: opt.q, face: opt.f });
+return;
+}
+}
+// If no safe raise, just call liar as last resort
+postMessage({ action: 'liar' });
+};
+3
+Implementation Notes:
+- Complexity: High – maintaining and updating a belief distribution for each opponent adds complexity. The
+pseudocode above uses a simplified heuristic belief update rather than a full Bayesian computation over all
+dice combinations (which would be intractable for 5 players). Despite simplifications, the logic is more
+involved than a basic threshold strategy.
+- Data Structures: A persistent belief object (stored on self ) holds an estimated count of each face for
+each opponent. This requires memory proportional to O(numPlayers * faces), which is small (e.g. 5 players *
+6 faces). More sophisticated Bayesian updates could use dynamic programming or particle filtering, but
+those would be more complex.
+- Computational Cost: Moderate. The example uses an approximate probability calculation that runs in
+O(numPlayers) per decision. A more exact approach might iterate over possible distributions or run
+simulations, which could push the time budget. Tuning the number of belief updates or samples is
+necessary to stay within 200ms.
+- Determinism: Fully deterministic. The strategy uses no random calls – it derives decisions from the current
+game state and history. (If Monte Carlo sampling were used for Bayesian updates, it would use the provided
+seeded Math.random to remain reproducible.) Given identical game states, it will always produce the
+same action.
+2. Monte Carlo Simulation Planner
+Core Logic & Philosophy: This strategy uses Monte Carlo simulation to evaluate moves. Rather than rely
+purely on analytical probability, the bot simulates many possible dice distributions and outcomes to
+decide whether to raise or call. Essentially, the bot “rolls out” the scenario hundreds or thousands of times
+in its head: it fills in all unknown dice randomly (according to known dice counts) and then simulates what
+would happen if it calls the bluff now versus if it raises the bid. By comparing the frequency of successful
+outcomes, the bot chooses the action with the best empirical success rate. This approach can incorporate
+more complex dynamics (e.g., potential reactions of other players) if a model for opponents’ behavior is
+assumed during simulation. The philosophy is to approximate a mini lookahead search in this imperfect-
+information game by brute-force sampling, which captures nuances that straightforward probability
+calculations might miss (such as the distribution of outcomes when the round continues). The result is a
+data-driven, tuning-free decision that tends to align with optimal play over many trials.
+Pseudocode:
+onmessage = (e) => {
+const { you, players, currentBid } = e.data.state;
+const myDice = you.dice;
+const totalDice = players.reduce((sum,p)=> sum + p.diceCount, 0);
+const unknownDiceCount = totalDice - myDice.length;
+// Helper: simulate a random assignment of all unknown dice
+function randomUnknownDice() {
+// Create an array representing all unknown dice (not including mine)
+const unknown = [];
+for (let p of players) {
+if (p.id !== you.id) {
+4
+// assign random faces for each of this player's dice
+for (let i = 0; i < p.diceCount; i++) {
+// Using deterministic seeded Math.random provided by framework
+const face = Math.floor(Math.random() * 6) + 1;
+unknown.push(face);
+}
+}
+}
+return unknown;
+}
+// Count occurrences of a face in an array of dice
+function countFace(diceArray, face) {
+return diceArray.filter(d => d === face).length;
+}
+// Decide an opening bid if no bid yet (choose a reasonable starting bid)
+if (!currentBid) {
+// Open with my highest-count face at roughly average quantity
+const counts = Array(7).fill(0);
+myDice.forEach(d => counts[d]++);
+let bestFace = counts.indexOf(Math.max(...counts));
+if (bestFace < 1) bestFace = 1;
+const expUnknown = unknownDiceCount / 6; // expected count of bestFace in
+unknown
+const openQty = Math.max(1, Math.round(counts[bestFace] + expUnknown));
+postMessage({ action: 'raise', quantity: openQty, face: bestFace });
+return;
+}
+const { quantity: currQ, face: currF } = currentBid;
+// Simulation parameters
+const N = 1000; // number of simulations (tune based on 200ms budget)
+let liarWins = 0, liarTotal = 0;
+let raiseWins = 0, raiseTotal = 0;
+for (let t = 0; t < N; t++) {
+const unknown = randomUnknownDice();
+// Current bid outcome if we call liar:
+liarTotal++;
+const actualCount = countFace(unknown.concat(myDice), currF);
+const claimTrue = (actualCount >= currQ);
+if (!claimTrue) {
+// Claim was false, calling liar would win (opponent loses a die)
+liarWins++;
+}
+// else claim was true, calling liar would lose (we lose a die)
+5
+// Outcome if we raise minimally (quantity+1 of same face):
+// We assume that if our new bid is false, eventually someone will call and
+we'll lose;
+// if it's true, either it goes through or a liar call fails, meaning we
+survive or someone else loses.
+raiseTotal++;
+const newBidQ = currQ + 1;
+const newBidF = currF;
+const actualCountNew = countFace(unknown.concat(myDice), newBidF);
+const newClaimTrue = (actualCountNew >= newBidQ);
+if (newClaimTrue) {
+// Our raise could be upheld (good outcome for us, not losing a die in
+this round)
+raiseWins++;
+}
+// if false, assume we'll eventually be caught and lose (so no increment to
+raiseWins)
+}
+// Estimate success probabilities
+const p_callWin = liarWins / Math.max(1, liarTotal); // probability we win
+by calling liar
+const p_raiseWin = raiseWins / Math.max(1,
+raiseTotal); // probability we come out safe by raising
+// Decision: choose action with higher chance to avoid losing a die
+if (p_callWin > p_raiseWin) {
+postMessage({ action: 'liar' });
+} else {
+// Here we choose the minimal raise; could also simulate other raise options
+similarly
+postMessage({ action: 'raise', quantity: currQ + 1, face: currF });
+}
+};
+Implementation Notes:
+- Complexity: Moderate to High. The core logic (random sampling of dice outcomes) is straightforward, but
+ensuring the simulation is fast enough is the challenge. The pseudocode uses N = 1000 trials as an
+example; this may need adjustment to fit in <200ms depending on the environment’s speed. Each trial
+involves random number generation and counting – relatively cheap operations – so a few thousand
+iterations are plausible within the time budget.
+- Data Structures: The simulation uses simple arrays for unknown dice and counters. No large data
+structures are needed, but storing intermediate results for reuse (e.g., precomputing one random allocation
+and tweaking it) could optimize speed.
+- Computational Cost: Tuning is required. For example, 1000 simulations per move might take on the order of
+tens of milliseconds in JavaScript, which is acceptable. The cost scales linearly with the number of samples
+6
+N . We must also simulate both calling and raising scenarios. To keep it deterministic, we use the seeded
+Math.random provided by the WebWorker (which is consistent across runs). If performance is an issue,
+N can be reduced or made adaptive (do more samples only when a decision is very close).
+- Determinism: The strategy is stochastic in methodology but deterministic in execution. It relies on
+Math.random which has been seeded for the tournament run , meaning the sequence of “random”
+outcomes is fixed given the initial seed. Thus, the bot will make the same decisions every time for identical
+game states. There is no hidden internal state except the progression of the RNG, which is globally
+deterministic. One consideration: because the RNG state persists, the exact sequence of random draws
+might depend on how many simulations were run in earlier turns. To maintain consistency, the number of
+samples N should be fixed or solely dependent on state (not, say, dynamically on time remaining). With
+careful implementation, the Monte Carlo planner yields a reproducible policy that approximates ideal play
+through large-sample evaluation.
+3. Opponent Modeling & Exploitation
+Core Logic & Philosophy: This strategy focuses on reading the opponents and adapting to their play
+styles . The bot tracks each opponent’s behavior over the course of a game (using the per-round history,
+since seat IDs are anonymized each new match). It gathers statistics such as how often each player raises
+versus calls “LIAR”, the typical magnitude of their bids, and whether their bluffs succeed or fail. Using this
+data, the bot categorizes opponents into profiles – e.g. conservative (rarely bluff, often call), aggressive bluffer
+(frequently make large raises), cautious (only bid when very safe), calling-station (calls bluffs at the slightest
+doubt), etc. The bot then exploits these tendencies. For example, if the previous bidder is known to bluff
+often, this bot will call them out with less hesitation (i.e. require a higher probability that the claim is true
+before not calling liar). Conversely, if an opponent has been very truthful (never caught bluffing), the bot
+gives them the benefit of the doubt and won’t call liar unless the claim is extremely unlikely. When the bot
+itself is raising, it considers the next player in turn: if the next player is very timid about calling, our bot can
+safely issue a bolder (more bluff-like) raise knowing that player will likely pass the turn; if the next player is
+very call-happy, our bot will only make raises that it can strongly back up with its own dice. This human-
+inspired strategy mirrors how skilled players “watch for patterns to mix up their bids” and calls –
+effectively playing the opponents, not just the odds.
+Pseudocode:
+onmessage = (e) => {
+const { you, players, currentBid, history } = e.data.state;
+const myDice = you.dice;
+const totalDice = players.reduce((sum,p)=> sum + p.diceCount, 0);
+// Persistent memory for opponent stats within a match
+if (!self.stats) self.stats = {}; // { [playerId]: { raises: 0, liars: 0,
+totalActions: 0, bluffFails: 0 } }
+// Update stats from history (e.g., look at the last action)
+if (history.length) {
+const last = history[history.length - 1];
+if (!self.stats[last.actor]) {
+2
+3
+3
+7
+self.stats[last.actor] = { raises: 0, liars: 0, totalActions: 0,
+bluffFails: 0 };
+}
+if (last.action === 'raise') {
+self.stats[last.actor].raises += 1;
+self.stats[last.actor].totalActions += 1;
+} else if (last.action === 'liar') {
+self.stats[last.actor].liars += 1;
+self.stats[last.actor].totalActions += 1;
+// If liar was called, we can detect if it was a correct call by looking
+at the next history entry
+// (In actual implementation, we might get an outcome event. Here assume
+history logs outcome of liar calls.)
+// Pseudocode assumes an outcome record or some way to increment
+bluffFails for the bidder if bluff caught.
+}
+// Note: We could also update bluffFails by checking if a raise resulted in
+a loss of die, etc., if that info is available.
+}
+// Define dynamic thresholds based on opponent styles
+const baseLiarThreshold = 0.22; // baseline probability to call liar
+let liarThreshold = baseLiarThreshold;
+let raiseThreshold = 0.40; // baseline probability needed to raise
+credibly
+// Identify the opponent who made the current bid (if any) and the next
+opponent in turn order
+let prevBidderId = null;
+if (currentBid && history.length) {
+// last raise in history is the current bid
+const lastRaise = history.slice().reverse().find(h => h.action === 'raise');
+prevBidderId = lastRaise ? lastRaise.actor : null;
+}
+// Find next player in turn (assuming players array is in turn order and you
+are at your index)
+let myIndex = players.findIndex(p => p.id === you.id);
+let nextPlayerId = players[(myIndex + 1) % players.length].id;
+if (nextPlayerId === you.id) {
+// if I'm last, nextPlayerId is myself (wrap-around), skip self
+nextPlayerId = players[(myIndex + 2) % players.length]?.id;
+}
+// Adjust liarThreshold based on previous bidder’s behavior
+if (prevBidderId && self.stats[prevBidderId]) {
+const oppStats = self.stats[prevBidderId];
+const raiseRate = oppStats.raises / Math.max(1, oppStats.totalActions);
+const liarRate = oppStats.liars / Math.max(1, oppStats.totalActions);
+8
+// If opponent raises a lot relative to calling (aggressive bluffer), be
+more skeptical
+if (raiseRate > 0.7) {
+liarThreshold = 0.30; // call liar more often (require only <30% chance
+to call liar)
+}
+// If opponent rarely bluffs (low raiseRate or high liarRate), be more
+lenient (harder to call them liar)
+if (liarRate > 0.5) {
+liarThreshold =
+0.15; // they call others often -> likely honest, so need <15% chance to call
+them
+}
+}
+// Adjust raiseThreshold based on next player's likely response
+if (self.stats[nextPlayerId]) {
+const nextStats = self.stats[nextPlayerId];
+const nextCallRate = nextStats.liars / Math.max(1, nextStats.totalActions);
+// If next player calls liar frequently (aggressive caller), only raise with
+strong confidence
+if (nextCallRate > 0.5) {
+raiseThreshold = 0.60; // need ≥60% chance our raise is true to attempt
+it
+}
+// If next player rarely calls liar (timid), we can bluff more (lower
+threshold)
+const nextRaiseRate = nextStats.raises / Math.max(1,
+nextStats.totalActions);
+if (nextCallRate < 0.2 && nextRaiseRate < 0.5) {
+raiseThreshold = 0.25;
+}
+}
+// Probability helper (basic like baseline)
+function probabilityAtLeast(face, qty) {
+// known count of face in my dice
+const myCount = myDice.filter(d => d === face).length;
+const need = Math.max(0, qty - myCount);
+const p = 1/6;
+// Binomial tail for need successes in unknownDiceCount trials
+// (Using a simple approximation or small loop since unknownDiceCount is
+manageable)
+let prob = 0;
+for (let k = need; k <= unknownDiceCount; k++) {
+// (Compute C(unknownDiceCount, k)*p^k*(1-p)^(unknownDiceCount-k))
+// ...omitted for brevity...
+}
+9
+return prob;
+}
+if (!currentBid) {
+// Opening bid: pick my highest-count face with quantity = that count or 1
+const counts = Array(7).fill(0);
+myDice.forEach(d => counts[d]++);
+let bestFace = 1;
+for (let f = 1; f <= 6; f++) {
+if (counts[f] > counts[bestFace]) bestFace = f;
+}
+const qty = Math.max(1, counts[bestFace]);
+postMessage({ action: 'raise', quantity: qty, face: bestFace });
+return;
+}
+const { quantity: currQ, face: currF } = currentBid;
+const claimProb = probabilityAtLeast(currF, currQ);
+// Decide to call liar based on adjusted threshold
+if (claimProb < liarThreshold) {
+postMessage({ action: 'liar' });
+return;
+}
+// Try to find a raise that meets our confidence threshold
+const legalRaises = [{q: currQ+1, f: currF}].concat(
+currF < 6 ? [{q: currQ, f: currF+1}] : []);
+for (let r of legalRaises) {
+if (probabilityAtLeast(r.f, r.q) >= raiseThreshold) {
+postMessage({ action: 'raise', quantity: r.q, face: r.f });
+return;
+}
+}
+// If no safe raise, just call liar if current claim is borderline (or make
+minimal raise otherwise)
+if (claimProb < 0.35) {
+postMessage({ action: 'liar' });
+} else {
+// minimal bump to keep game moving
+postMessage({ action: 'raise', quantity: currQ+1, face: currF });
+}
+};
+Implementation Notes:
+- Complexity: Moderate. Tracking opponent behavior requires bookkeeping but not heavy computation. The
+10
+pseudocode maintains a stats object and updates it each turn; this is simple counting and conditional
+logic. Profiling opponents is conceptually straightforward, though choosing good thresholds for
+“aggressive” vs “conservative” is a tuning task (the example uses arbitrary 70%/50% cutoffs for illustration).
+- Data Structures: A dictionary of opponent statistics, keyed by anonymized player ID for the current game.
+This uses minimal memory (a few counters per opponent). The game’s history provides the needed
+data. Note that because seat IDs change each match, the bot cannot carry these profiles across games – it
+effectively “re-learns” each game, which is within the rules (no cross-game identity tracking).
+- Computational Cost: Low. Updating counts and adjusting thresholds are O(1) per turn. The probability
+calculation uses a binomial formula similar to the baseline (could reuse baseline’s functions), which is
+efficient for up to ~25 unknown dice. Overall, the strategy easily operates well under 200ms.
+- Determinism: Deterministic. The logic consists of fixed rules and arithmetic on game state data. There is no
+random component. Even though it adapts to opponents, it does so in a fixed way given the observed
+history – i.e. two runs with the same sequence of actions will produce the same adjustments. One subtlety
+is that this strategy may create a feedback loop in long matches: if it identifies someone as a bluffer and
+calls them, that opponent’s stats will shift. However, since all adjustments are based on concrete past
+actions, the behavior remains consistent and replayable. By mimicking how humans read opponent
+tendencies, this bot can exploit predictable players and respond optimally to different styles.
+4. Dice-Count Adaptive Risk Strategy
+Core Logic & Philosophy: This strategy adapts its level of risk-taking based on the dice counts (or
+“stacks”) of all players and the stage of the game. The core idea is to dynamically shift between
+conservative and aggressive play depending on one’s advantage. When the bot has more dice than most
+opponents (a large stack), it plays more conservatively: it avoids unnecessary liar calls and only bluffs with
+bids that it can reasonably support. The reasoning is that with a lead, it’s better to let opponents knock each
+other out rather than risk losing dice on a bad call. On the flip side, if the bot is down to a few dice
+(disadvantaged), it becomes more willing to take risks – calling borderline bluffs or making daring raises –
+because playing safe when behind often leads to elimination anyway. This aligns with human tournament
+intuition: big leaders protect their lead, while underdogs gamble to get back in the game. Moreover, the
+strategy accounts for the overall number of dice remaining in the game. In early rounds with many dice
+in play, moderate bluffs are statistically more likely to succeed (more dice = more uncertainty) . In late-
+game scenarios with few dice, wild claims are usually obvious lies (since “the risk of bluffing increases with
+fewer dice remaining” ), so the bot tightens up significantly. By adjusting its liar-call threshold and
+bidding aggression according to these factors, this strategy maintains an optimal risk-reward balance
+throughout the match.
+Pseudocode:
+onmessage = (e) => {
+const { you, players, currentBid } = e.data.state;
+const myDiceCount = you.dice.length;
+const totalDice = players.reduce((sum,p)=> sum + p.diceCount, 0);
+const unknownDiceCount = totalDice - myDiceCount;
+// Determine relative rank by dice count
+const sortedCounts = players.map(p => p.diceCount).sort((a,b)=>b-a);
+4
+5
+11
+const myRank = sortedCounts.indexOf(myDiceCount) + 1; // 1 = highest dice
+count
+const maxDice = sortedCounts[0];
+const minDice = sortedCounts[sortedCounts.length - 1];
+// Base thresholds
+let liarThreshold = 0.20; // base probability below which to call liar
+let raiseThreshold = 0.40; // base probability needed to raise
+// Adjust thresholds based on stack rank
+if (myDiceCount === maxDice) {
+// I'm one of the leaders: be more cautious (harder to call liar, safer
+raises)
+liarThreshold = 0.15; // require claim <15% likely to call liar
+raiseThreshold = 0.50; // need ≥50% chance for a raise to be made
+}
+if (myDiceCount === minDice) {
+// I'm at the bottom: be more aggressive (call more, bluff more)
+liarThreshold = 0.30; // call if claim <30% likely
+raiseThreshold = 0.30; // only need 30% chance to attempt a raise
+}
+// Adjust for overall game stage (fewer dice => be more truthful and
+selective)
+if (totalDice < 10) { // late game scenario, very few dice left
+// Reduce bluffing because outcomes are more certain with fewer dice
+raiseThreshold = Math.max(raiseThreshold, 0.50);
+// Possibly increase liar calls slightly since big claims are easier to
+catch
+liarThreshold = Math.max(liarThreshold, 0.25);
+}
+// Probability function as in baseline
+function probabilityAtLeast(face, qty) {
+let have = 0;
+for (let d of (you.dice||[])) {
+if (d === face) have++;
+}
+const need = Math.max(0, qty - have);
+const p = 1/6;
+// simple binomial tail (could call baseline’s function)
+let prob = 0;
+for (let k = need; k <= unknownDiceCount; k++) {
+// compute probability of exactly k occurrences of 'face' in unknown dice
+// and sum for k>=need.
+// ... (omitted for brevity; assume this calculation exists) ...
+}
+return prob;
+12
+}
+if (!currentBid) {
+// Opening bid: conservative if leading, aggressive if trailing
+// Choose face I have most of. Quantity: if I'm trailing, round up
+expectation; if leading, round down.
+const myFaceCounts = Array(7).fill(0);
+for (let d of you.dice) myFaceCounts[d]++;
+let bestFace = 1, bestCount = -1;
+for (let f = 1; f <= 6; f++) {
+if (myFaceCounts[f] > bestCount) { bestFace = f; bestCount =
+myFaceCounts[f]; }
+}
+const expectedUnknown = unknownDiceCount * (1/6);
+let qty = bestCount;
+if (myDiceCount === minDice) {
+// behind - be a bit bolder
+qty = Math.max(1, Math.ceil(bestCount + expectedUnknown));
+} else {
+// ahead or normal - be a bit conservative
+qty = Math.max(1, Math.floor(bestCount + expectedUnknown) - 1);
+}
+postMessage({ action: 'raise', quantity: qty, face: bestFace });
+return;
+}
+const { quantity: currQ, face: currF } = currentBid;
+const claimProb = probabilityAtLeast(currF, currQ);
+// Liar call decision
+if (claimProb < liarThreshold) {
+postMessage({ action: 'liar' });
+return;
+}
+// Raise decision: find a minimal raise meeting raiseThreshold
+const options = [{ q: currQ+1, f: currF }];
+if (currF < 6) options.push({ q: currQ, f: currF+1 });
+for (let opt of options) {
+if (probabilityAtLeast(opt.f, opt.q) >= raiseThreshold) {
+postMessage({ action: 'raise', quantity: opt.q, face: opt.f });
+return;
+}
+}
+// If no raise is safe and we also aren’t confident enough to call liar, nudge
+up minimally
+13
+postMessage({ action: 'raise', quantity: currQ+1, face: currF });
+};
+Implementation Notes:
+- Complexity: Low. The strategy mainly tweaks a couple of threshold values based on simple metrics (dice
+counts). The conditional logic for adjusting thresholds is straightforward. This makes the code easy to
+implement and verify.
+- Data Structures: It uses basic variables and computations on the players list (which contains each
+player’s remaining dice count). Sorting the dice counts to find maxDice and minDice is O(n log n) (with
+n=5 players, negligible). Alternatively, one can scan for max/min in O(n). No persistent memory across
+rounds is needed except perhaps a counter for rounds if further stage nuance is desired.
+- Computational Cost: Very small. Even with the probability calculation (binomial summation) for each
+potential action, the overhead is minor given at most 25 unknown dice and a couple of raise options. The
+adjustments to thresholds and decision logic add only a few arithmetic operations and comparisons.
+Running well under 200ms is virtually guaranteed.
+- Determinism: Completely deterministic. The strategy doesn’t rely on any random choices. Given the same
+configuration of dice counts and current bid, it will always produce the same decision. One thing to note is
+that this strategy can create predictable patterns (e.g., a leading bot almost never calls unless extremely safe,
+a trailing bot calls more often). While this determinism might be exploitable in theory (opponents could
+adjust knowing your behavior by dice count), the tournament’s anonymity and simultaneous adaptation by
+others make it hard to target. In practice, the dice-count adaptive strategy has been effective at preserving
+leads and giving underdogs a fighting chance by calibrating bluffing risk to the game state, reflecting
+sound tournament tactics.
+5. Game-Theoretic Equilibrium Strategy (CFR/NFSP-Based)
+Core Logic & Philosophy: This strategy is derived from game-theoretic analysis and AI self-play training,
+aiming to approximate the Nash equilibrium strategy for Liar’s Dice. Instead of hand-crafted rules, it
+leverages an offline-computed policy (e.g., via Counterfactual Regret Minimization (CFR) or Neural
+Fictitious Self-Play (NFSP)) that tells the bot how to act optimally in any given state . The core
+philosophy is to minimize exploitability: it balances bluffing and truthful play in such a way that no
+opponent can easily take advantage. In practice, an equilibrium strategy will sometimes make surprising
+moves (like an occasional bluff with a weak hand or an unexpected pass with a strong hand) to avoid
+revealing private information . However, since our environment requires determinism, this bot
+implements a deterministic approximation of the mixed-strategy equilibrium. For example, it might always
+choose the highest-probability action recommended by the equilibrium strategy (rather than randomizing).
+The result is a highly sophisticated policy that has learned, through simulation of millions of rounds, the
+best responses to any situation. Such a bot can adjust to the table implicitly – for instance, it learns when to
+bluff less because opponents call often, or vice versa, as these patterns are encoded in its strategy table. In
+essence, this approach attempts to play perfect Liar’s Dice (within the no-randomness constraint), making it
+extremely strong and resilient. Notably, research has shown that in multi-player Liar’s Dice variants, neural
+self-play agents can achieve nearly unexploitable performance , which this strategy emulates.
+Pseudocode:
+6 7
+8
+7 9
+14
+// Pseudocode: Using a precomputed strategy (policy) derived from equilibrium
+analysis
+// For illustration, assume we have a function getEquilibriumAction(state) ->
+{action, quantity, face}
+// which encapsulates the bot's trained strategy. This could be a lookup table
+or neural network.
+onmessage = (e) => {
+const state = e.data.state;
+// The state includes you.dice, players (dice counts), currentBid, and
+history.
+// Construct a simplified state representation that indexes into our policy
+table.
+const myDiceSorted = [...state.you.dice].sort().join(''); // e.g. "146" if
+dice are [1,4,6]
+const currentBidStr = state.currentBid
+? `${state.currentBid.quantity}${state.currentBid.face}
+`
+: "none";
+// We might also include some recent actions or aggregated info if needed.
+// Compose an information-set key (this is a simplified key; real strategy
+might use more detail):
+const infoKey = `${myDiceSorted}|${currentBidStr}|$
+{state.players.map(p=>p.diceCount).join(',')}`;
+// Lookup the recommended action from the equilibrium policy map (precomputed
+offline)
+let actionRec;
+if (self.equilibriumPolicy && self.equilibriumPolicy[infoKey]) {
+actionRec = self.equilibriumPolicy[infoKey];
+// example value: {action: 'raise', quantity: 5, face: 3, mixProb: {raise:
+0.7, liar:0.3}}
+} else {
+// Fallback: if state not in policy (unlikely if policy is comprehensive),
+use a default safe strategy
+actionRec = { action: state.currentBid ? 'liar' : 'raise', quantity:
+state.currentBid ? null : 1, face: state.currentBid ? null : 1 };
+}
+// Deterministic choice: pick the action with highest probability in the mixed
+strategy (or a fixed rule)
+// mixProb might suggest randomness, but we choose deterministically for
+reproducibility.
+// E.g., if policy says 70% raise 5x3, 30% call, we'll always take the raise
+(since it's highest probability).
+let finalAction;
+15
+if (actionRec.mixProb) {
+// Choose argmax of mixProb (deterministic choice of the most favored
+action)
+let bestAct = actionRec.action;
+// (In practice, we might just assume actionRec.action is already the best
+deterministic choice.)
+finalAction = { action: bestAct, quantity: actionRec.quantity, face:
+actionRec.face };
+} else {
+finalAction = { action: actionRec.action, quantity: actionRec.quantity,
+face: actionRec.face };
+}
+// Output the chosen action
+postMessage(finalAction);
+};
+Implementation Notes:
+- Complexity: Implementation can range from moderate to very high depending on how the strategy is
+obtained. The pseudocode assumes a precomputed equilibriumPolicy (perhaps loaded as a JSON or
+generated by a function) that maps game states to an action distribution. Generating this policy is complex
+(involving heavy off-line computation using CFR, deep reinforcement learning, or other game-solving
+techniques) , but integrating the finished policy into the bot is straightforward: it becomes a lookup
+or a fixed algorithmic procedure. The pseudocode uses a simple key for the info set; a real implementation
+might encode the state more rigorously (including all dice counts, maybe simplified history). Accessing a
+dictionary or running a small neural network to get the action is well within 200ms.
+- Data Structures: The primary structure is the policy representation. For example, a large dictionary (or a
+decision tree) mapping states to actions. This could be sizable – potentially many thousands of entries – but
+still feasible to load in a web context if compressed. Alternatively, a neural network model (with fixed
+weights) can be embedded and run forward passes to decide moves. Modern JavaScript can handle a small
+neural net in under 200ms if optimized (and WebAssembly or WebGL could further speed it, though that
+might be overkill). One must ensure the policy covers all reachable states; otherwise, a backup heuristic (like
+the baseline strategy) is needed for unseen states.
+- Computational Cost: Low at runtime. Once training is done, using the strategy is just a matter of table
+lookup or evaluating a fixed formula. The heavy lifting was offloaded to the training phase (which could
+have taken hours offline). The example above simply finds the recommended action and picks the highest-
+probability move. The bot does not search during the game – it’s playing a fixed strategy that was optimized
+beforehand. This means the per-move computation is minimal (constant time for lookup).
+- Determinism: By design, this strategy eliminates randomness in execution. In true equilibrium play, one
+would randomize (mix strategies) to remain unpredictable , but here we choose a deterministic proxy:
+always taking the equilibrium action with the highest probability (or using a deterministic tiebreak rule).
+This makes the bot’s behavior reproducible given the same state. One clever twist: some deterministic bots
+use their hidden dice as a source of pseudo-randomness to emulate mixed strategies (e.g., if an
+equilibrium says “bluff 30% of the time,” the bot could bluff if the sum of its dice mod 100 < 30 – this uses
+private information to achieve a random-like choice without calling Math.random ). Such techniques are
+still deterministic from the engine’s perspective and could be employed to more faithfully follow a mixed
+strategy. However, even without that, a largely equilibrium-based deterministic strategy will be very strong.
+10 11
+12
+16
+Studies (like a Stanford CS224R project) have shown that a neural fictitious self-play agent in a 4-player Liar’s
+Dice can dominate heuristic players and achieve extremely low exploitability . Our deterministic
+equilibrium bot brings those insights into a practical implementation. The ease of implementation is offset
+by the difficulty of obtaining the strategy, but once in place, it provides a formidable, adaptively perfect style
+of play that evolves over the 2500-game tournament primarily through its inherent learned policy rather
+than explicit on-the-fly adjustments.
+Sources: The strategies above draw on probability theory and game theory fundamentals , human
+expert tips on bluffing and reading opponents , and findings from AI research on Liar’s Dice (e.g.
+regret-minimization and self-play learning) . Each strategy is tailored to be deterministic and efficient
+for a WebWorker-based simulation, while offering a distinct approach beyond the provided Baseline,
+AggroBluffer, ProbabilityTuned, and MomentumAdaptive bots.
+Liar' s dice optimal strategy
+https://assets.website-files.com/66f3e6db6d9b28337c56f2a2/680417c6ab8b637476e9886a_90423846074.pdf
+tournament.js
+file://file-5rH1MyhpfLQ6w19d6FrWtY
+liars dice - Bluff - Early game strategy (5 players) - Board & Card Games Stack Exchange
+https://boardgames.stackexchange.com/questions/3403/bluff-early-game-strategy-5-players
+cs224r.stanford.edu
+https://cs224r.stanford.edu/projects/pdfs/CS224R_Final_Report__7_.pdf
+Liar’s Dice by Self-Play. With Counterfactual Regret and Neural… | by Thomas Dybdahl Ahle |
+TDS Archive | Medium
+https://medium.com/data-science/lairs-dice-by-self-play-3bbed6addde0
+7 9
+4 1
+3 5
+12 9
+1 3 5
+2
+4
+6 7 9
+8 10 11 12
+17
