@@ -5,11 +5,11 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-console.log('🏆 Running Tournament Test for Player2 (v1.1.0)\n');
+console.log('🏆 Running Tournament Test for Player2 (v1.2.0)\n');
 console.log('='.repeat(60));
 
 // Configuration
-const ROUNDS = 500;
+const ROUNDS = 1000; // More rounds for better accuracy
 const SEED = 10185;
 
 // Load bot files
@@ -231,7 +231,7 @@ function pointsForPlace(place) {
 async function runTournament() {
   console.log(`📊 Running ${ROUNDS} rounds with seed ${SEED}\n`);
   console.log('Competitors:');
-  console.log('  - Player2 (Monte Carlo v1.1.0 - with survival logic)');
+  console.log('  - Player2 (Monte Carlo v1.2.0)');
   console.log('  - Baseline');
   console.log('  - ProbabilityTuned');
   console.log('  - MomentumAdaptive');
@@ -257,7 +257,7 @@ async function runTournament() {
       }
     }
 
-    if (round % 50 === 0) {
+    if (round % 100 === 0) {
       process.stdout.write(`\r⏳ Progress: ${round}/${ROUNDS} rounds...`);
     }
   }
@@ -305,20 +305,58 @@ async function runTournament() {
     } else {
       const leader = results[0];
       const gap = leader.avgTS - player2Result.avgTS;
-      const improvement = player2Result.avgTS - 42.05; // Previous score
       console.log(`\n📈 Gap to leader: ${gap.toFixed(2)} points`);
       console.log(`   Leader: ${leader.name} (${leader.avgTS.toFixed(2)} avg TS)`);
-      if (improvement > 0) {
-        console.log(`   ✅ Improvement: +${improvement.toFixed(2)} points from v1.0.0`);
-      }
     }
+
+    // Return the score for updating high score
+    return player2Result.avgTS;
   }
 
-  console.log('\n' + '='.repeat(60));
-  return results;
+  return null;
 }
 
-runTournament().catch(err => {
-  console.error('\n❌ Tournament failed:', err);
-  process.exit(1);
-});
+runTournament()
+  .then(score => {
+    if (score !== null && score > 0) {
+      console.log(`\n💾 Saving score: ${score.toFixed(2)}`);
+      console.log(`   Run: node update-highscore.js ${score.toFixed(2)}`);
+      console.log('');
+      
+      // Automatically update high score if it's better
+      const highscoreFile = path.join(__dirname, 'highscores.json');
+      let highScores = { highScores: [], currentBest: { version: 1, score: 0.0, filename: 'strategy.js' } };
+      
+      if (fs.existsSync(highscoreFile)) {
+        try {
+          highScores = JSON.parse(fs.readFileSync(highscoreFile, 'utf8'));
+        } catch (err) {
+          console.warn('⚠️  Could not read highscores.json');
+        }
+      }
+
+      const currentBest = highScores.currentBest?.score || 0.0;
+      
+      if (score > currentBest) {
+        console.log(`\n🎉 NEW HIGH SCORE! Previous: ${currentBest.toFixed(2)}, New: ${score.toFixed(2)}`);
+        
+        // Run the update script
+        const { execSync } = require('child_process');
+        try {
+          execSync(`node update-highscore.js ${score.toFixed(2)}`, { 
+            cwd: __dirname,
+            stdio: 'inherit'
+          });
+          console.log('\n✅ High score updated successfully!');
+        } catch (err) {
+          console.error('\n❌ Failed to update high score:', err.message);
+        }
+      } else {
+        console.log(`\n📊 Score ${score.toFixed(2)} is not higher than current best: ${currentBest.toFixed(2)}`);
+      }
+    }
+  })
+  .catch(err => {
+    console.error('\n❌ Tournament failed:', err);
+    process.exit(1);
+  });
