@@ -2,18 +2,24 @@
   "highScores": [
     {
       "version": 1,
-      "score": 0.0,
+      "score": 0,
       "timestamp": "2025-01-15T00:00:00Z",
       "changes": "Initial strategy implementation - Equilibrium Strategy (baseline fallback)",
       "filename": "strategy.js"
+    },
+    {
+      "version": 2,
+      "score": 55.9,
+      "timestamp": "2025-11-04T04:05:34.351Z",
+      "changes": "Improved from version 1",
+      "filename": "strategy_v2_score55.90.js"
     }
   ],
   "currentBest": {
-    "version": 1,
-    "score": 0.0,
-    "filename": "strategy.js"
+    "version": 2,
+    "score": 55.9,
+    "filename": "strategy_v2_score55.90.js"
   },
-  "strategy": "Game-Theoretic Equilibrium",
+  "strategy": "Game-Theoretic Equilibrium Strategy",
   "player": "Player5"
 }
-
